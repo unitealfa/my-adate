@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import List, Tuple
 from math import atan2
-import numpy as np
 
 from .data import Instance
 from .evaluator import eval_route
@@ -17,8 +16,8 @@ def sweep_build(inst: Instance, veh_type: int = 0) -> Tuple[List[List[int]], Lis
     # Calcul des angles polaires autour du dépôt
     angles = []
     for i in range(1, n + 1):
-        dx = coords[i, 0] - coords[0, 0]
-        dy = coords[i, 1] - coords[0, 1]
+        dx = coords[i][0] - coords[0][0]
+        dy = coords[i][1] - coords[0][1]
         angles.append((i, atan2(dy, dx)))
     angles.sort(key=lambda x: x[1])
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
-import numpy as np
 from .data import Instance
 
 @dataclass
@@ -34,14 +33,14 @@ def eval_route(instance: Instance, route: List[int], veh_type: int = 0) -> Route
     # Distance totale
     for i in range(len(seq) - 1):
         a, b = seq[i], seq[i + 1]
-        dist += instance.dist[a, b]
+        dist += instance.dist[a][b]
 
     # Propagation temporelle (forward pass)
     t = instance.depot_open
     for idx in range(1, len(seq)):
         i_prev = seq[idx - 1]
         i = seq[idx]
-        travel = instance.time[i_prev, i]
+        travel = instance.time[i_prev][i]
         t = t + travel
 
         # Client (pas dépôt final)
