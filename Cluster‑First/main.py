@@ -284,9 +284,10 @@ def action_demo():
     )
 
     default_inst = examples[1][0]
+    default_inst_display = default_inst.replace(os.sep, "\\")
     inst_prompt = (
         "Nom/chemin instance ou numéro [défaut: 2 → "
-        f"{default_inst.replace(os.sep, '\\')}"  # Re-présente le chemin avec des backslashes pour cohérence menu
+        f"{default_inst_display}"
         "] > "
     )
     inst_in = input(inst_prompt).strip()
