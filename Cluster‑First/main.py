@@ -221,8 +221,11 @@ def explain_instance(inst_path: str):
 def explain_result(res: dict, showk: int):
     print("\n🧾 Résultats (résumé) :")
     print(f"   • Feasible      : {res['feasible']}  (True = toutes contraintes respectées)")
-    print(f"   • Vehicles used : {res['used_vehicles']}")
-    print(f"   • Total cost    : {res['cost']:.2f}")
+    print(f"   • Vehicles used : {res['used_vehicles']} véhicule(s) mobilisé(s)")
+    print(
+        "   • Total cost    : "
+        f"{res['cost']:.2f} unités de distance/cost (selon l'échelle propre au fichier VRP)"
+    )
     print(f"   • Détails routes: affichage des {min(showk, len(res['routes']))} premières routes")
     for i, r in enumerate(res["routes"][:showk]):
         print(f"     - Route {i+1} ({len(r)} clients) : {r}")
@@ -256,21 +259,64 @@ def action_list_recommended():
     input("\n(Entrée) Retour au menu… ")
 
 def action_demo():
-    print("\n[Démo] — 1 run sur une instance")
-    print("Exemples recommandés :")
-    print("  • cvrplib\\A-n32-k5.vrp          (petite, rapide)")
-    print("  • cvrplib\\Vrp-Set-X\\X\\X-n101-k25.vrp   (~100 clients)")
-    print("  • cvrplib\\Vrp-Set-Solomon\\C101.txt     (VRPTW/fenêtres)")
-    inst_in = input("Nom/chemin instance [défaut: cvrplib\\Vrp-Set-X\\X\\X-n101-k25.vrp] > ").strip()
-    if not inst_in:
-        inst_in = os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n101-k25.vrp")
+    examples = [
+        (
+            os.path.join("cvrplib", "A-n32-k5.vrp"),
+            "Instance CVRP compacte : 32 clients, flotte maximale de 5 véhicules. Idéale pour une exécution très rapide.",
+        ),
+        (
+            os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n101-k25.vrp"),
+            "Instance CVRP moyenne : 101 clients (≈100) et jusqu'à 25 véhicules. Bon compromis entre taille et temps de calcul.",
+        ),
+        (
+            os.path.join("cvrplib", "Vrp-Set-Solomon", "C101.txt"),
+            "Instance VRPTW de Solomon : contraintes de capacité + fenêtres de temps serrées pour la série C100.",
+        ),
+    ]
+    for idx, (path, desc) in enumerate(examples, start=1):
+        print(f"  [{idx}] {path} — {desc}")
 
+    default_inst = examples[1][0]
+    inst_prompt = (
+        "Nom/chemin instance ou numéro [défaut: 2 → "
+        f"{default_inst.replace(os.sep, '\\')}"  # Re-présente le chemin avec des backslashes pour cohérence menu
+        "] > "
+    )
+    inst_in = input(inst_prompt).strip()
+
+    if inst_in in {"1", "2", "3"}:
+        inst_in = examples[int(inst_in) - 1][0]
+    elif not inst_in:
+        inst_in = default_inst
+        
     # Paramètres
     try:
-        seed  = int(input(f"Graine aléatoire [défaut: {DEFAULTS['seed']}] > ") or DEFAULTS["seed"])
-        iters = int(input(f"Itérations Tabu max [défaut: {DEFAULTS['tabu_iter']}] > ") or DEFAULTS["tabu_iter"])
-        stall = int(input(f"Arrêt si pas d'amélioration [défaut: {DEFAULTS['tabu_stall']}] > ") or DEFAULTS["tabu_stall"])
-        showk = int(input(f"Afficher les k premières routes [défaut: {DEFAULTS['show_routes']}] > ") or DEFAULTS["show_routes"])
+        seed  = int(
+            input(
+                f"Graine aléatoire (entier pour reproduire le hasard) [défaut: {DEFAULTS['seed']}] > "
+            )
+            or DEFAULTS["seed"]
+        )
+        iters = int(
+            input(
+                f"Itérations Tabu max (nombre total d'itérations de la recherche) [défaut: {DEFAULTS['tabu_iter']}] > "
+            )
+            or DEFAULTS["tabu_iter"]
+        )
+        stall = int(
+            input(
+                "Arrêt si pas d'amélioration (itérations consécutives tolérées sans progrès) "
+                f"[défaut: {DEFAULTS['tabu_stall']}] > "
+            )
+            or DEFAULTS["tabu_stall"]
+        )
+        showk = int(
+            input(
+                f"Afficher les k premières routes (k = nombre de tournées listées) [défaut: {DEFAULTS['show_routes']}] > "
+            )
+            or DEFAULTS["show_routes"]
+        )
+        
     except ValueError:
         print("⚠️ Entrée invalide, utilisation des valeurs par défaut.")
         seed, iters, stall, showk = DEFAULTS["seed"], DEFAULTS["tabu_iter"], DEFAULTS["tabu_stall"], DEFAULTS["show_routes"]
