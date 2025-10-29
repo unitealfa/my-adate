@@ -37,6 +37,13 @@ import time
 from statistics import mean, stdev
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# When this script is launched from outside the Cluster-First directory (e.g. from
+# the repository root or by double-clicking the file on Windows), ensure the
+# Cluster-First package is importable.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+    
 DATA_DIR = os.path.join(HERE, "data")
 
 # -------------------------------------------------------------------
