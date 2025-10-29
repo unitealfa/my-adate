@@ -221,10 +221,13 @@ def explain_instance(inst_path: str):
 def explain_result(res: dict, showk: int):
     print("\n🧾 Résultats (résumé) :")
     print(f"   • Feasible      : {res['feasible']}  (True = toutes contraintes respectées)")
-    print(f"   • Vehicles used : {res['used_vehicles']} véhicule(s) mobilisé(s)")
+    print(
+        "   • Vehicles used : "
+        f"{res['used_vehicles']} véhicule(s) mobilisé(s) (unités = nombre de tournées actives)"
+    )
     print(
         "   • Total cost    : "
-        f"{res['cost']:.2f} unités de distance/cost (selon l'échelle propre au fichier VRP)"
+        f"{res['cost']:.2f} unité(s) de distance/coût cumulée (mêmes unités que l'instance VRP)"
     )
     print(f"   • Détails routes: affichage des {min(showk, len(res['routes']))} premières routes")
     for i, r in enumerate(res["routes"][:showk]):
@@ -273,8 +276,12 @@ def action_demo():
             "Instance VRPTW de Solomon : contraintes de capacité + fenêtres de temps serrées pour la série C100.",
         ),
     ]
+    print("\n[Démo] Choisis une instance de démonstration parmi ces suggestions :")
     for idx, (path, desc) in enumerate(examples, start=1):
         print(f"  [{idx}] {path} — {desc}")
+    print(
+        "  Tape le NUMÉRO pour l'utiliser directement ou saisis un chemin personnalisé (relatif/absolu)."
+    )
 
     default_inst = examples[1][0]
     inst_prompt = (
@@ -293,26 +300,29 @@ def action_demo():
     try:
         seed  = int(
             input(
-                f"Graine aléatoire (entier pour reproduire le hasard) [défaut: {DEFAULTS['seed']}] > "
+                "Graine aléatoire (entier : même graine = mêmes choix aléatoires) "
+                f"[défaut: {DEFAULTS['seed']}] > "
             )
             or DEFAULTS["seed"]
         )
         iters = int(
             input(
-                f"Itérations Tabu max (nombre total d'itérations de la recherche) [défaut: {DEFAULTS['tabu_iter']}] > "
+                "Itérations Tabu max (nombre total de mouvements explorés) "
+                f"[défaut: {DEFAULTS['tabu_iter']}] > "
             )
             or DEFAULTS["tabu_iter"]
         )
         stall = int(
             input(
-                "Arrêt si pas d'amélioration (itérations consécutives tolérées sans progrès) "
+                "Arrêt si pas d'amélioration (tolérance avant de stopper la recherche) "
                 f"[défaut: {DEFAULTS['tabu_stall']}] > "
             )
             or DEFAULTS["tabu_stall"]
         )
         showk = int(
             input(
-                f"Afficher les k premières routes (k = nombre de tournées listées) [défaut: {DEFAULTS['show_routes']}] > "
+                "Afficher les k premières routes (k = nombre de tournées détaillées ci-dessous) "
+                f"[défaut: {DEFAULTS['show_routes']}] > "
             )
             or DEFAULTS["show_routes"]
         )
