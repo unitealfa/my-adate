@@ -281,7 +281,7 @@ def explain_result(inst: Instance, res: dict, showk: int) -> None:
         print(f"   • Détails des tournées : (premières {showk} sur {total_routes}, mets 0 pour tout afficher)")
         routes_to_show = routes[:showk]
         
-        veh_types = res.get("veh_types", [0 for _ in routes])
+    veh_types = res.get("veh_types", [0 for _ in routes])
 
     for idx, route in enumerate(routes_to_show, start=1):
         if not route:
