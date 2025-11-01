@@ -37,6 +37,7 @@ import os
 import sys
 import time
 from statistics import mean, stdev
+from typing import List
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,12 +48,13 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
     
 DATA_DIR = os.path.join(HERE, "data")
+IMAGES_DIR = os.path.join(HERE, "images")
 
 # -------------------------------------------------------------------
 # Imports du projet (assure-toi d'avoir solver/__init__.py)
 # -------------------------------------------------------------------
 try:
-    from solver.data import load_vrplib
+    from solver.data import Instance, load_vrplib
     from solver.solver import solve_vrp
     from solver.evaluator import eval_route
 except Exception as e:
@@ -205,7 +207,7 @@ DEFAULTS = {
     "seed": 11,
     "tabu_iter": 2000,
     "tabu_stall": 250,
-    "show_routes": 3,
+    "show_routes": 0,  # 0 = toutes les tournées
     "runs": 20,
     "bench_instances": [
         # Instances "canonique" recommandées (stables)
@@ -225,21 +227,229 @@ def explain_instance(inst_path: str):
     print("   • Données typiques : coordonnées (x,y), demande q_i, capacité Q, temps/Distances, fenêtres [a_i,b_i]…")
     print("   • Objectif : minimiser le coût total (distance/temps) sous contraintes (capacité, fenêtres, etc.)")
 
-def explain_result(res: dict, showk: int):
-    print("\n🧾 Résultats (résumé) :")
-    print(f"   • Feasible      : {res['feasible']}  (True = toutes contraintes respectées)")
+def explain_result(inst: Instance, res: dict, showk: int) -> None:
+    print("\n🧾 Résultat détaillé :")
+    feasible_txt = "Oui" if res.get("feasible") else "Non"
+    print(f"   • Solution faisable ? : {feasible_txt} (Oui = toutes les contraintes sont respectées)")
     print(
-        "   • Vehicles used : "
-        f"{res['used_vehicles']} véhicule(s) mobilisé(s) (unités = nombre de tournées actives)"
+        "   • Véhicules utilisés : "
+        f"{res.get('used_vehicles', 0)} tournée(s) réellement effectuée(s)"
+    )
+    cost = res.get("cost", 0.0)
+    distance = res.get("distance", cost)
+    print(
+        "   • Distance totale parcourue : "
+        f"{distance:.2f} unité(s) de distance (ex. kilomètres dans les instances classiques)"
     )
     print(
-        "   • Total cost    : "
-        f"{res['cost']:.2f} unité(s) de distance/coût cumulée (mêmes unités que l'instance VRP)"
+        "   • Coût total optimisé     : "
+        f"{cost:.2f} (identique à la distance si l'instance n'impose pas d'autres coûts)"
     )
-    print(f"   • Détails routes: affichage des {min(showk, len(res['routes']))} premières routes")
-    for i, r in enumerate(res["routes"][:showk]):
-        print(f"     - Route {i+1} ({len(r)} clients) : {r}")
+    routes = res.get("routes", [])
+    total_routes = len(routes)
+    print(f"   • Nombre de tournées générées : {total_routes}")
 
+    if total_routes == 0:
+        print("   • Aucune tournée à afficher.")
+        return
+
+    if showk <= 0 or showk >= total_routes:
+        print("   • Détails des tournées : (affichage complet)")
+        routes_to_show = routes
+    else:
+        print(f"   • Détails des tournées : (premières {showk} sur {total_routes}, mets 0 pour tout afficher)")
+        routes_to_show = routes[:showk]
+
+    for idx, route in enumerate(routes_to_show, start=1):
+        if not route:
+            print(f"     - Tournée #{idx:02d} : aucun client desservi")
+            continue
+        path_txt = " → ".join(str(c) for c in route)
+        print(f"     - Tournée #{idx:02d} ({len(route)} client(s)) : {path_txt}")
+
+    if 0 < showk < total_routes:
+        remaining = total_routes - showk
+        print(f"     … {remaining} autre(s) tournée(s) masquée(s). Indique 0 pour tout afficher.")
+
+
+def ask_int(prompt: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    """Demande un entier avec validation simple et rappel du défaut."""
+    while True:
+        raw = input(prompt).strip()
+        if not raw:
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                print("   ↪️ Merci d'entrer un nombre ENTIER (ex : 42). Réessaie.")
+                continue
+
+        if min_value is not None and value < min_value:
+            print(f"   ↪️ La valeur doit être ≥ {min_value}. Réessaie.")
+            continue
+        if max_value is not None and value > max_value:
+            print(f"   ↪️ La valeur est plafonnée à {max_value}. Réessaie.")
+            continue
+        return value
+
+
+def _sanitize_name_for_file(name: str) -> str:
+    safe = [c if c.isalnum() or c in {"_", "-"} else "_" for c in name]
+    return "".join(safe).strip("_") or "instance"
+
+
+def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - dépendances optionnelles
+        print("⚠️ Impossible de créer le graphique (matplotlib indisponible) :", exc)
+        return
+
+    if not routes:
+        print("⚠️ Graphique non généré : aucune tournée calculée.")
+        return
+
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+    slug = _sanitize_name_for_file(inst.name if hasattr(inst, "name") else "instance")
+    save_path = os.path.join(IMAGES_DIR, f"plan_{slug}.png")
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.set_title(f"Plan des tournées — {inst.name}")
+    coords = inst.coords
+    depot_x, depot_y = coords[0]
+    ax.scatter([depot_x], [depot_y], c="black", s=120, marker="s", label="Dépôt")
+
+    cmap = plt.cm.get_cmap("tab20", max(1, len(routes)))
+    for idx, route in enumerate(routes, start=1):
+        if not route:
+            continue
+        path = [0] + route + [0]
+        xs = [coords[i][0] for i in path]
+        ys = [coords[i][1] for i in path]
+        color = cmap((idx - 1) % cmap.N)
+        ax.plot(xs, ys, "-o", color=color, linewidth=2, label=f"Tournée {idx}")
+        for client in route:
+            ax.annotate(str(client), (coords[client][0], coords[client][1]),
+                        textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8)
+
+    ax.set_xlabel("Coordonnée X")
+    ax.set_ylabel("Coordonnée Y")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+
+    fig.savefig(save_path, dpi=150)
+    rel_path = os.path.relpath(save_path, HERE)
+    print(f"   ↳ Plan sauvegardé : {rel_path}")
+
+    backend = plt.get_backend().lower()
+    if "agg" in backend:
+        print("   ↳ Ouvre ce fichier PNG pour visualiser le plan (backend sans affichage direct).")
+        plt.close(fig)
+    else:  # pragma: no cover - dépend de l'environnement d'exécution
+        plt.show()
+
+
+def _animate_console(routes: List[List[int]]) -> None:
+    print("🚚 Animation console (déplacements étape par étape) :")
+    for idx, route in enumerate(routes, start=1):
+        if not route:
+            print(f"   - Camion {idx}: aucune visite (tournée vide).")
+            continue
+        full_path = [0] + route + [0]
+        for step in range(1, len(full_path)):
+            start = full_path[step - 1]
+            end = full_path[step]
+            print(f"   - Camion {idx}: {start} → {end}")
+            time.sleep(0.3)
+
+
+def animate_routes(inst: Instance, routes: List[List[int]]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+    except Exception as exc:  # pragma: no cover - dépendances optionnelles
+        print("⚠️ Animation graphique indisponible (matplotlib manquant) :", exc)
+        _animate_console(routes)
+        return
+
+    if not routes:
+        print("⚠️ Animation non générée : aucune tournée.")
+        return
+
+    backend = plt.get_backend().lower()
+    if "agg" in backend:
+        print("⚠️ Backend matplotlib non interactif. Affichage console à la place.")
+        _animate_console(routes)
+        return
+
+    coords = inst.coords
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.set_title(f"Animation des tournées — {inst.name}")
+    depot_x, depot_y = coords[0]
+    ax.scatter([depot_x], [depot_y], c="black", s=120, marker="s", label="Dépôt")
+
+    cmap = plt.cm.get_cmap("tab20", max(1, len(routes)))
+    movers = []
+    segments: List[tuple[int, List[float], List[float]]] = []
+
+    for idx, route in enumerate(routes):
+        if not route:
+            continue
+        path = [0] + route + [0]
+        xs = [coords[i][0] for i in path]
+        ys = [coords[i][1] for i in path]
+        color = cmap((idx) % cmap.N)
+        ax.plot(xs, ys, "-", color=color, linewidth=1.5)
+        mover, = ax.plot([coords[0][0]], [coords[0][1]], marker="o", markersize=10,
+                         color=color, alpha=0.9)
+        movers.append((idx, mover))
+        for start_idx, end_idx in zip(path, path[1:]):
+            segments.append((idx, coords[start_idx], coords[end_idx]))
+
+    if not segments:
+        print("⚠️ Aucune arête à animer (tournées vides). Animation console utilisée.")
+        plt.close(fig)
+        _animate_console(routes)
+        return
+
+    ax.set_xlabel("Coordonnée X")
+    ax.set_ylabel("Coordonnée Y")
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linestyle="--", alpha=0.4)
+
+    steps_per_segment = 25
+    total_frames = len(segments) * steps_per_segment
+
+    def update(frame: int):  # pragma: no cover - animation interactive
+        seg_idx = min(frame // steps_per_segment, len(segments) - 1)
+        progress = (frame % steps_per_segment) / (steps_per_segment - 1)
+        route_idx, start_xy, end_xy = segments[seg_idx]
+        x = start_xy[0] + (end_xy[0] - start_xy[0]) * progress
+        y = start_xy[1] + (end_xy[1] - start_xy[1]) * progress
+        for idx_mover, mover in movers:
+            if idx_mover == route_idx:
+                mover.set_data([x], [y])
+        return [m for _, m in movers]
+
+    FuncAnimation(fig, update, frames=total_frames, interval=80, blit=True, repeat=False)
+    plt.show()
+
+
+def offer_visualizations(inst: Instance, routes: List[List[int]]) -> None:
+    if not routes:
+        return
+
+    choice_static = input("\n🎨 Voir un plan statique des tournées ? (o/n) [o] > ").strip().lower()
+    if choice_static in {"", "o", "oui", "y", "yes"}:
+        show_routes_plot(inst, routes)
+
+    choice_live = input("🚛 Lancer une animation (camions en mouvement) ? (o/n) [n] > ").strip().lower()
+    if choice_live in {"o", "oui", "y", "yes"}:
+        animate_routes(inst, routes)
+        
 # -------------------------------------------------------------------
 # Actions de menu
 # -------------------------------------------------------------------
@@ -305,39 +515,48 @@ def action_demo():
         inst_in = default_inst
         
     # Paramètres
-    try:
-        seed  = int(
-            input(
-                "Graine aléatoire (entier : même graine = mêmes choix aléatoires) "
-                f"[défaut: {DEFAULTS['seed']}] > "
-            )
-            or DEFAULTS["seed"]
-        )
-        iters = int(
-            input(
-                "Itérations Tabu max (nombre total de mouvements explorés) "
-                f"[défaut: {DEFAULTS['tabu_iter']}] > "
-            )
-            or DEFAULTS["tabu_iter"]
-        )
-        stall = int(
-            input(
-                "Arrêt si pas d'amélioration (tolérance avant de stopper la recherche) "
-                f"[défaut: {DEFAULTS['tabu_stall']}] > "
-            )
-            or DEFAULTS["tabu_stall"]
-        )
-        showk = int(
-            input(
-                "Afficher les k premières routes (k = nombre de tournées détaillées ci-dessous) "
-                f"[défaut: {DEFAULTS['show_routes']}] > "
-            )
-            or DEFAULTS["show_routes"]
-        )
-        
-    except ValueError:
-        print("⚠️ Entrée invalide, utilisation des valeurs par défaut.")
-        seed, iters, stall, showk = DEFAULTS["seed"], DEFAULTS["tabu_iter"], DEFAULTS["tabu_stall"], DEFAULTS["show_routes"]
+    seed = ask_int(
+        (
+            "\nGraine aléatoire :"
+            "\n   → Saisis un ENTIER (même valeur = mêmes résultats aléatoires)."
+            f"\n   → Laisse vide pour utiliser la valeur par défaut ({DEFAULTS['seed']})."
+            "\nNombre choisi > "
+        ),
+        DEFAULTS["seed"],
+    )
+    iters = ask_int(
+        (
+            "\nItérations Tabu maximum :"
+            "\n   → Nombre total de mouvements testés (1 à 2000)."
+            f"\n   → Par défaut : {DEFAULTS['tabu_iter']} (recommandé pour un bon résultat)."
+            "\nNombre choisi > "
+        ),
+        DEFAULTS["tabu_iter"],
+        min_value=1,
+        max_value=2000,
+    )
+    stall = ask_int(
+        (
+            "\nArrêt si pas d'amélioration :"
+            "\n   → Combien d'itérations consécutives sans progrès avant de stopper (1 à 2000)."
+            f"\n   → Valeur par défaut : {DEFAULTS['tabu_stall']}."
+            "\nNombre choisi > "
+        ),
+        DEFAULTS["tabu_stall"],
+        min_value=1,
+        max_value=2000,
+    )
+    showk = ask_int(
+        (
+            "\nAffichage des tournées détaillées :"
+            "\n   → Indique combien de tournées afficher en détail."
+            "\n   → Tape 0 pour afficher TOUTES les tournées calculées."
+            f"\n   → Valeur par défaut : {DEFAULTS['show_routes']}."
+            "\nNombre choisi > "
+        ),
+        DEFAULTS["show_routes"],
+        min_value=0,
+    )
 
     # Chargement robuste + solve
     try:
@@ -345,7 +564,8 @@ def action_demo():
         inst, eff = try_load_instance(req)
         explain_instance(eff)
         res = solve_vrp(inst, rng_seed=seed, tabu_max_iter=iters, tabu_no_improve=stall)
-        explain_result(res, showk)
+        explain_result(inst, res, showk)
+        offer_visualizations(inst, res["routes"])
     except Exception as e:
         print("\n❌ Erreur de chargement/exécution :", e)
         print("   → Essaie avec une instance sous 'data/cvrplib/...'.")
