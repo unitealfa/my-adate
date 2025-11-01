@@ -35,6 +35,7 @@ Utilisation rapide :
 from __future__ import annotations
 import os
 import sys
+from math import isfinite
 from statistics import mean, stdev
 from typing import Any, Dict, List, Tuple
 
@@ -228,6 +229,12 @@ def explain_instance(inst_path: str):
 
 def _format_number(value: float) -> str:
     """Formate un nombre : entier sans décimales sinon 2 décimales."""
+    if not isfinite(value):
+        if value > 0:
+            return "+∞"
+        if value < 0:
+            return "-∞"
+        return "NaN"
     rounded = round(value)
     if abs(value - rounded) < 1e-6:
         return str(int(rounded))
