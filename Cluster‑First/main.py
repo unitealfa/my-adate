@@ -198,6 +198,58 @@ def read_opt_cost_local(path_vrp: str):
 # -------------------------------------------------------------------
 # Paramètres modifiables via le menu [5]
 # -------------------------------------------------------------------
+RECOMMENDED_INSTANCE_CATALOG: List[Dict[str, str]] = [
+    {
+        "path": os.path.join("cvrplib", "A-n32-k5.vrp"),
+        "details": "32 nœuds, capacité 100 — Augerat et al., 5 camions, valeur optimale 784.",
+    },
+    {
+        "path": os.path.join("cvrplib", "B-n31-k5.vrp"),
+        "details": "31 nœuds, capacité 100 — Augerat et al., flotte maximale de 5 véhicules (optimum 672).",
+    },
+    {
+        "path": os.path.join("cvrplib", "CMT6.vrp"),
+        "details": "51 nœuds, capacité 160 — Instance CMT6 (Christofides et al.), coût de référence 555.43.",
+    },
+    {
+        "path": os.path.join("cvrplib", "E-n13-k4.vrp"),
+        "details": "13 nœuds, capacité 6000 — Série Eilon, 4 véhicules minimum, optimum 247.",
+    },
+    {
+        "path": os.path.join("cvrplib", "F-n72-k4.vrp"),
+        "details": "72 nœuds, capacité 30000 — Instance Fisher n°11, flotte limitée à 4 camions.",
+    },
+    {
+        "path": os.path.join("cvrplib", "Golden_1.vrp"),
+        "details": "241 nœuds, capacité 550 — Instance Golden_1 (grande taille), coût 5627.54.",
+    },
+    {
+        "path": os.path.join("cvrplib", "Li_21.vrp"),
+        "details": "561 nœuds, capacité 1200 — Instance Li_21 (échelle XL), coût 16212.74.",
+    },
+    {
+        "path": os.path.join("cvrplib", "M-n101-k10.vrp"),
+        "details": "101 nœuds, capacité 200 — Série Christofides M, flotte max 10 véhicules, optimum 820.",
+    },
+    {
+        "path": os.path.join("cvrplib", "ORTEC-n242-k12.vrp"),
+        "details": "242 nœuds, capacité 125 — Instance ORTEC inspirée d'un cas réel de livraison alimentaire.",
+    },
+    {
+        "path": os.path.join("cvrplib", "P-n16-k8.vrp"),
+        "details": "16 nœuds, capacité 35 — Série Augerat P, jusqu'à 8 tournées, optimum 450.",
+    },
+    {
+        "path": os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n101-k25.vrp"),
+        "details": "101 nœuds, capacité 206 — Jeu X d'Uchoa et al. (2013), environ 25 tournées.",
+    },
+    {
+        "path": os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n200-k36.vrp"),
+        "details": "200 nœuds, capacité 402 — Jeu X d'Uchoa et al., instance moyenne/large (36 tournées).",
+    },
+]
+
+
 DEFAULTS = {
     "seed": 11,
     "tabu_iter": 2000,
@@ -206,11 +258,31 @@ DEFAULTS = {
     "runs": 20,
     "bench_instances": [
         # Instances "canonique" recommandées (stables)
-        os.path.join("cvrplib", "A-n32-k5.vrp"),
-        os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n101-k25.vrp"),
-        os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n200-k36.vrp"),
+        RECOMMENDED_INSTANCE_CATALOG[0]["path"],
+        RECOMMENDED_INSTANCE_CATALOG[10]["path"],
+        RECOMMENDED_INSTANCE_CATALOG[11]["path"],
     ],
 }
+
+
+def _print_recommended_instance_catalog(indent: str = "   ") -> None:
+    """Affiche le catalogue numéroté des instances recommandées."""
+    header = f"{indent}{'#':>2} | {'Instance':<35} | Description"
+    sep = f"{indent}{'-' * (len(header) - len(indent))}"
+    print(header)
+    print(sep)
+    for idx, item in enumerate(RECOMMENDED_INSTANCE_CATALOG, start=1):
+        path_display = item["path"].replace(os.sep, "/")
+        print(f"{indent}{idx:>2} | {path_display:<35} | {item['details']}")
+
+
+def _resolve_catalog_shortcut(token: str) -> str | None:
+    """Retourne le chemin associé à un numéro de catalogue saisi par l'utilisateur."""
+    if token.isdigit():
+        idx = int(token) - 1
+        if 0 <= idx < len(RECOMMENDED_INSTANCE_CATALOG):
+            return RECOMMENDED_INSTANCE_CATALOG[idx]["path"]
+    return None
 
 # -------------------------------------------------------------------
 # Aides affichage / explications
@@ -956,11 +1028,21 @@ def action_bench():
     print("\nÉtape 1 — Sélection des instances à évaluer")
     print("   Instances recommandées :")
     for s in DEFAULTS["bench_instances"]:
-        print("    •", s)
+        print("    •", s.replace(os.sep, "/"))
     print("   ➜ Fournis des chemins relatifs (depuis data/) séparés par ';' ou laisse vide.")
-    raw = input("   Instances ? > ").strip()
+    print("   ➜ Tu peux aussi saisir des NUMÉROS du catalogue ci-dessous (ex: '1;3;12').")
+    print("\n   Catalogue des instances canoniques :")
+    _print_recommended_instance_catalog(indent="    ")
+    raw = input("\n   Instances ? > ").strip()
     if raw:
-        instances = [x.strip() for x in raw.split(";") if x.strip()]
+        tokens = [tok for tok in re.split(r"[;,\\s]+", raw) if tok]
+        instances = []
+        for tok in tokens:
+            mapped = _resolve_catalog_shortcut(tok)
+            if mapped is not None:
+                instances.append(mapped)
+            else:
+                instances.append(tok.replace("\\", os.sep))
     else:
         instances = DEFAULTS["bench_instances"]
     if not instances:
