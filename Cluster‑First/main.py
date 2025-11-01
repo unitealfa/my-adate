@@ -36,7 +36,7 @@ from __future__ import annotations
 import os
 import sys
 from statistics import mean, stdev
-from typing import Any, List
+from typing import Any, Dict, List
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -334,10 +334,12 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         cmap = plt.get_cmap("tab20", max(1, len(routes)))
 
     mover_artists: List[tuple[int, Any]] = []
-    segments: List[tuple[int, tuple[float, float], tuple[float, float]]] = []
+    segments_by_route: Dict[int, List[tuple[tuple[float, float], tuple[float, float]]]] = {}
 
     for idx, route in enumerate(routes, start=1):
+        route_key = idx - 1
         if not route:
+            segments_by_route[route_key] = []
             continue
         path = [0] + route + [0]
         xs = [coords[i][0] for i in path]
@@ -346,27 +348,36 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         ax.plot(xs, ys, "-o", color=color, linewidth=2, label=f"Tournée {idx}")
         mover, = ax.plot([depot_x], [depot_y], marker="o", markersize=10,
                          color=color, alpha=0.9, visible=False)
-        mover_artists.append((idx - 1, mover))
+        mover_artists.append((route_key, mover))
         for client in route:
             ax.annotate(str(client), (coords[client][0], coords[client][1]),
                         textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8)
+        route_segments: List[tuple[tuple[float, float], tuple[float, float]]] = []
         for start_idx, end_idx in zip(path, path[1:]):
             start_xy = coords[start_idx]
             end_xy = coords[end_idx]
-            segments.append((idx - 1, start_xy, end_xy))
+            route_segments.append((start_xy, end_xy))
+        segments_by_route[route_key] = route_segments
 
     ax.set_xlabel("Coordonnée X")
     ax.set_ylabel("Coordonnée Y")
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc="best", fontsize=8)
-    fig.tight_layout()
+    ax.legend(
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        borderaxespad=0.6,
+        fontsize=8,
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
 
-    if not segments:
+    max_segments = max((len(seg) for seg in segments_by_route.values()), default=0)
+
+    if max_segments == 0:
         print("⚠️ Aucune tournée non vide à animer.")
 
     steps_per_segment = 25
-    total_frames = max(1, len(segments) * steps_per_segment)
+    total_frames = max(1, max_segments * steps_per_segment)
     anim_holder: dict[str, FuncAnimation | None] = {"anim": None}
 
     def init_positions():  # pragma: no cover - animation interactive
@@ -376,13 +387,25 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         return [m for _, m in mover_artists]
 
     def update(frame: int):  # pragma: no cover - animation interactive
-        seg_idx = min(frame // steps_per_segment, max(0, len(segments) - 1))
-        progress = 0.0 if len(segments) == 0 else (frame % steps_per_segment) / (steps_per_segment - 1)
-        route_idx, start_xy, end_xy = segments[seg_idx]
-        x = start_xy[0] + (end_xy[0] - start_xy[0]) * progress
-        y = start_xy[1] + (end_xy[1] - start_xy[1]) * progress
+        if max_segments == 0:
+            return [m for _, m in mover_artists]
+
+        seg_idx = min(frame // steps_per_segment, max(0, max_segments - 1))
+        progress = (frame % steps_per_segment) / max(1, steps_per_segment - 1)
+
         for idx_mover, mover in mover_artists:
-            if idx_mover == route_idx:
+            route_segments = segments_by_route.get(idx_mover, [])
+            if not route_segments:
+                mover.set_data([depot_x], [depot_y])
+                continue
+
+            if seg_idx >= len(route_segments):
+                last_xy = route_segments[-1][1]
+                mover.set_data([last_xy[0]], [last_xy[1]])
+            else:
+                start_xy, end_xy = route_segments[seg_idx]
+                x = start_xy[0] + (end_xy[0] - start_xy[0]) * progress
+                y = start_xy[1] + (end_xy[1] - start_xy[1]) * progress
                 mover.set_data([x], [y])
         return [m for _, m in mover_artists]
 
@@ -390,7 +413,7 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
     launch_button = Button(button_ax, "Lancer une animation", color="#e0e0e0", hovercolor="#d0d0d0")
 
     def on_click(_event):  # pragma: no cover - interaction utilisateur
-        if not segments:
+        if max_segments == 0:
             return
         anim_holder["anim"] = FuncAnimation(
             fig,
