@@ -699,22 +699,81 @@ def action_demo():
 
 def action_tests():
     print("\n[Tests rapides] — Vérifie la faisabilité (capacité + fenêtres) sur 1..n instances.")
-    print("💡 Laisse vide pour : cvrplib\\A-n32-k5.vrp  cvrplib\\Vrp-Set-X\\X\\X-n101-k25.vrp")
-    raw = input("Instances (séparées par des espaces) > ").strip()
-    if not raw:
-        instances = [
-            os.path.join("cvrplib", "A-n32-k5.vrp"),
-            os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n101-k25.vrp"),
-        ]
-    else:
-        instances = [x for x in raw.split() if x.strip()]
+    default_instances = [
+        os.path.join("cvrplib", "A-n32-k5.vrp"),
+        os.path.join("cvrplib", "Vrp-Set-X", "X", "X-n101-k25.vrp"),
+    ]
 
-    try:
-        iters = int(input(f"Itérations Tabu max [défaut: 500] > ") or 500)
-        stall = int(input(f"Arrêt si pas d'amélioration [défaut: 100] > ") or 100)
-    except ValueError:
-        print("⚠️ Entrée invalide, utilisation des valeurs par défaut (500/100).")
-        iters, stall = 500, 100
+    print("Choisis comment sélectionner les instances à tester :")
+    print("  [1] Utiliser la sélection par défaut (2 instances recommandées)")
+    print("  [2] Choisir dans la liste recommandée détectée dans ./data")
+    print("  [3] Saisir manuellement un ou plusieurs chemins/noms d'instances")
+
+    choice = input("Ton choix [1-3] (Entrée = 1) > ").strip() or "1"
+
+    instances: List[str]
+    if choice == "1":
+        instances = default_instances
+        print("\n🟢 Sélection par défaut :")
+        for path in instances:
+            print("   -", path)
+    elif choice == "2":
+        recommended = list_instances_recommended(DATA_DIR)
+        if not recommended:
+            print("⚠️ Aucune instance recommandée détectée sous ./data. Passe en saisie manuelle.")
+            instances = default_instances
+        else:
+            print("\nListe recommandée :")
+            for idx, path in enumerate(recommended, start=1):
+                print(f"   [{idx:02d}] {os.path.relpath(path, DATA_DIR)}")
+
+            while True:
+                print("\nIndique les numéros à tester (ex : 1 4 5).")
+                print("Laisse vide pour tout tester.")
+                raw_idx = input("Ta sélection > ").strip()
+                if not raw_idx:
+                    instances = [os.path.relpath(p, DATA_DIR) for p in recommended]
+                    break
+
+                try:
+                    indexes = [int(tok) for tok in raw_idx.split()]
+                except ValueError:
+                    print("↪️ Merci d'indiquer uniquement des numéros (1, 2, 3…).")
+                    continue
+
+                if any(idx < 1 or idx > len(recommended) for idx in indexes):
+                    print(f"↪️ Les numéros doivent être compris entre 1 et {len(recommended)}.")
+                    continue
+
+                # Conversion en chemins relatifs pour cohérence avec le reste du programme
+                instances = [os.path.relpath(recommended[idx - 1], DATA_DIR) for idx in indexes]
+                break
+    elif choice == "3":
+        print("\nSaisis les chemins ou noms d'instances séparés par des espaces.")
+        print("Exemples :")
+        print("   - cvrplib/A-n32-k5.vrp")
+        print("   - cvrplib/Vrp-Set-X/X/X-n101-k25.vrp")
+        print("   - data/mon_instance_personnalisee.vrp")
+        raw = input("Instances > ").strip()
+        instances = [x for x in raw.split() if x.strip()]
+        if not instances:
+            print("↪️ Aucune instance saisie, retour à la sélection par défaut.")
+            instances = default_instances
+    else:
+        print("⚠️ Choix inconnu, utilisation de la sélection par défaut.")
+        instances = default_instances
+
+    print("\nParamètres de Tabu Search :")
+    iters = ask_int(
+        "   - Itérations maximum (défaut 500) > ",
+        500,
+        min_value=1,
+    )
+    stall = ask_int(
+        "   - Arrêt si pas d'amélioration après (défaut 100) > ",
+        100,
+        min_value=1,
+    )
 
     ok_all = True
     for item in instances:
