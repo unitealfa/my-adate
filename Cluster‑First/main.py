@@ -35,9 +35,8 @@ Utilisation rapide :
 from __future__ import annotations
 import os
 import sys
-import time
 from statistics import mean, stdev
-from typing import List
+from typing import Any, List
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -48,7 +47,6 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
     
 DATA_DIR = os.path.join(HERE, "data")
-IMAGES_DIR = os.path.join(HERE, "images")
 
 # -------------------------------------------------------------------
 # Imports du projet (assure-toi d'avoir solver/__init__.py)
@@ -301,18 +299,28 @@ def _sanitize_name_for_file(name: str) -> str:
 
 def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
     try:
+        import matplotlib as mpl
         import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+        from matplotlib.widgets import Button
     except Exception as exc:  # pragma: no cover - dépendances optionnelles
-        print("⚠️ Impossible de créer le graphique (matplotlib indisponible) :", exc)
+        print("⚠️ Impossible d'afficher le plan (matplotlib indisponible) :", exc)
         return
 
     if not routes:
         print("⚠️ Graphique non généré : aucune tournée calculée.")
         return
 
-    os.makedirs(IMAGES_DIR, exist_ok=True)
-    slug = _sanitize_name_for_file(inst.name if hasattr(inst, "name") else "instance")
-    save_path = os.path.join(IMAGES_DIR, f"plan_{slug}.png")
+    backend = plt.get_backend().lower()
+    if "agg" in backend:  # pragma: no cover - dépend du système local
+        try:
+            plt.switch_backend("TkAgg")
+        except Exception:
+            try:
+                plt.switch_backend("Qt5Agg")
+            except Exception:
+                print("⚠️ Backend matplotlib non interactif : impossible d'afficher le plan.")
+                return
 
     fig, ax = plt.subplots(figsize=(7, 6))
     ax.set_title(f"Plan des tournées — {inst.name}")
@@ -320,7 +328,14 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
     depot_x, depot_y = coords[0]
     ax.scatter([depot_x], [depot_y], c="black", s=120, marker="s", label="Dépôt")
 
-    cmap = plt.cm.get_cmap("tab20", max(1, len(routes)))
+    try:
+        cmap = mpl.colormaps.get_cmap("tab20", max(1, len(routes)))
+    except Exception:  # pragma: no cover - compat anciennes versions
+        cmap = plt.get_cmap("tab20", max(1, len(routes)))
+
+    mover_artists: List[tuple[int, Any]] = []
+    segments: List[tuple[int, tuple[float, float], tuple[float, float]]] = []
+
     for idx, route in enumerate(routes, start=1):
         if not route:
             continue
@@ -329,9 +344,16 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         ys = [coords[i][1] for i in path]
         color = cmap((idx - 1) % cmap.N)
         ax.plot(xs, ys, "-o", color=color, linewidth=2, label=f"Tournée {idx}")
+        mover, = ax.plot([depot_x], [depot_y], marker="o", markersize=10,
+                         color=color, alpha=0.9, visible=False)
+        mover_artists.append((idx - 1, mover))
         for client in route:
             ax.annotate(str(client), (coords[client][0], coords[client][1]),
                         textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8)
+        for start_idx, end_idx in zip(path, path[1:]):
+            start_xy = coords[start_idx]
+            end_xy = coords[end_idx]
+            segments.append((idx - 1, start_xy, end_xy))
 
     ax.set_xlabel("Coordonnée X")
     ax.set_ylabel("Coordonnée Y")
@@ -340,101 +362,50 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
 
-    fig.savefig(save_path, dpi=150)
-    rel_path = os.path.relpath(save_path, HERE)
-    print(f"   ↳ Plan sauvegardé : {rel_path}")
-
-    backend = plt.get_backend().lower()
-    if "agg" in backend:
-        print("   ↳ Ouvre ce fichier PNG pour visualiser le plan (backend sans affichage direct).")
-        plt.close(fig)
-    else:  # pragma: no cover - dépend de l'environnement d'exécution
-        plt.show()
-
-
-def _animate_console(routes: List[List[int]]) -> None:
-    print("🚚 Animation console (déplacements étape par étape) :")
-    for idx, route in enumerate(routes, start=1):
-        if not route:
-            print(f"   - Camion {idx}: aucune visite (tournée vide).")
-            continue
-        full_path = [0] + route + [0]
-        for step in range(1, len(full_path)):
-            start = full_path[step - 1]
-            end = full_path[step]
-            print(f"   - Camion {idx}: {start} → {end}")
-            time.sleep(0.3)
-
-
-def animate_routes(inst: Instance, routes: List[List[int]]) -> None:
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
-    except Exception as exc:  # pragma: no cover - dépendances optionnelles
-        print("⚠️ Animation graphique indisponible (matplotlib manquant) :", exc)
-        _animate_console(routes)
-        return
-
-    if not routes:
-        print("⚠️ Animation non générée : aucune tournée.")
-        return
-
-    backend = plt.get_backend().lower()
-    if "agg" in backend:
-        print("⚠️ Backend matplotlib non interactif. Affichage console à la place.")
-        _animate_console(routes)
-        return
-
-    coords = inst.coords
-    fig, ax = plt.subplots(figsize=(7, 6))
-    ax.set_title(f"Animation des tournées — {inst.name}")
-    depot_x, depot_y = coords[0]
-    ax.scatter([depot_x], [depot_y], c="black", s=120, marker="s", label="Dépôt")
-
-    cmap = plt.cm.get_cmap("tab20", max(1, len(routes)))
-    movers = []
-    segments: List[tuple[int, List[float], List[float]]] = []
-
-    for idx, route in enumerate(routes):
-        if not route:
-            continue
-        path = [0] + route + [0]
-        xs = [coords[i][0] for i in path]
-        ys = [coords[i][1] for i in path]
-        color = cmap((idx) % cmap.N)
-        ax.plot(xs, ys, "-", color=color, linewidth=1.5)
-        mover, = ax.plot([coords[0][0]], [coords[0][1]], marker="o", markersize=10,
-                         color=color, alpha=0.9)
-        movers.append((idx, mover))
-        for start_idx, end_idx in zip(path, path[1:]):
-            segments.append((idx, coords[start_idx], coords[end_idx]))
-
     if not segments:
-        print("⚠️ Aucune arête à animer (tournées vides). Animation console utilisée.")
-        plt.close(fig)
-        _animate_console(routes)
-        return
-
-    ax.set_xlabel("Coordonnée X")
-    ax.set_ylabel("Coordonnée Y")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, linestyle="--", alpha=0.4)
+        print("⚠️ Aucune tournée non vide à animer.")
 
     steps_per_segment = 25
-    total_frames = len(segments) * steps_per_segment
+    total_frames = max(1, len(segments) * steps_per_segment)
+    anim_holder: dict[str, FuncAnimation | None] = {"anim": None}
+
+    def init_positions():  # pragma: no cover - animation interactive
+        for _, mover in mover_artists:
+            mover.set_visible(True)
+            mover.set_data([depot_x], [depot_y])
+        return [m for _, m in mover_artists]
 
     def update(frame: int):  # pragma: no cover - animation interactive
-        seg_idx = min(frame // steps_per_segment, len(segments) - 1)
-        progress = (frame % steps_per_segment) / (steps_per_segment - 1)
+        seg_idx = min(frame // steps_per_segment, max(0, len(segments) - 1))
+        progress = 0.0 if len(segments) == 0 else (frame % steps_per_segment) / (steps_per_segment - 1)
         route_idx, start_xy, end_xy = segments[seg_idx]
         x = start_xy[0] + (end_xy[0] - start_xy[0]) * progress
         y = start_xy[1] + (end_xy[1] - start_xy[1]) * progress
-        for idx_mover, mover in movers:
+        for idx_mover, mover in mover_artists:
             if idx_mover == route_idx:
                 mover.set_data([x], [y])
-        return [m for _, m in movers]
+        return [m for _, m in mover_artists]
 
-    FuncAnimation(fig, update, frames=total_frames, interval=80, blit=True, repeat=False)
+    button_ax = fig.add_axes([0.72, 0.02, 0.25, 0.07])
+    launch_button = Button(button_ax, "Lancer une animation", color="#e0e0e0", hovercolor="#d0d0d0")
+
+    def on_click(_event):  # pragma: no cover - interaction utilisateur
+        if not segments:
+            return
+        anim_holder["anim"] = FuncAnimation(
+            fig,
+            update,
+            init_func=init_positions,
+            frames=total_frames,
+            interval=80,
+            blit=True,
+            repeat=False,
+        )
+        launch_button.label.set_text("Rejouer l'animation")
+        fig.canvas.draw_idle()
+
+    launch_button.on_clicked(on_click)
+
     plt.show()
 
 
@@ -442,13 +413,7 @@ def offer_visualizations(inst: Instance, routes: List[List[int]]) -> None:
     if not routes:
         return
 
-    choice_static = input("\n🎨 Voir un plan statique des tournées ? (o/n) [o] > ").strip().lower()
-    if choice_static in {"", "o", "oui", "y", "yes"}:
-        show_routes_plot(inst, routes)
-
-    choice_live = input("🚛 Lancer une animation (camions en mouvement) ? (o/n) [n] > ").strip().lower()
-    if choice_live in {"o", "oui", "y", "yes"}:
-        animate_routes(inst, routes)
+    show_routes_plot(inst, routes)
         
 # -------------------------------------------------------------------
 # Actions de menu
