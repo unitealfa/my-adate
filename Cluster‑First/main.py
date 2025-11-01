@@ -225,6 +225,29 @@ def explain_instance(inst_path: str):
     print("   • Données typiques : coordonnées (x,y), demande q_i, capacité Q, temps/Distances, fenêtres [a_i,b_i]…")
     print("   • Objectif : minimiser le coût total (distance/temps) sous contraintes (capacité, fenêtres, etc.)")
 
+
+def _compute_waiting_segments(inst: Instance, route: List[int], veh_type: int) -> List[tuple[int, float]]:
+    """Retourne les (client, attente) pour une tournée donnée."""
+    if not route:
+        return []
+
+    seq = [0] + route
+    current_time = inst.depot_open
+    waiting_info: List[tuple[int, float]] = []
+
+    for prev, client in zip(seq, seq[1:]):
+        travel = inst.time[prev][client]
+        arrival = current_time + travel
+        wait = max(0.0, inst.window_a[client] - arrival)
+        if wait > 1e-9:
+            waiting_info.append((client, wait))
+        start_service = arrival + wait
+        current_time = start_service + inst.service[client]
+
+    return waiting_info
+
+
+
 def explain_result(inst: Instance, res: dict, showk: int) -> None:
     print("\n🧾 Résultat détaillé :")
     feasible_txt = "Oui" if res.get("feasible") else "Non"
@@ -257,13 +280,24 @@ def explain_result(inst: Instance, res: dict, showk: int) -> None:
     else:
         print(f"   • Détails des tournées : (premières {showk} sur {total_routes}, mets 0 pour tout afficher)")
         routes_to_show = routes[:showk]
+        
+        veh_types = res.get("veh_types", [0 for _ in routes])
 
     for idx, route in enumerate(routes_to_show, start=1):
         if not route:
             print(f"     - Tournée #{idx:02d} : aucun client desservi")
             continue
         path_txt = " → ".join(str(c) for c in route)
-        print(f"     - Tournée #{idx:02d} ({len(route)} client(s)) : {path_txt}")
+        header_txt = f"     - Tournée #{idx:02d} ({len(route)} client(s)) : "
+        print(f"{header_txt}{path_txt}")
+
+        veh_idx = idx - 1
+        veh_type = veh_types[veh_idx] if veh_idx < len(veh_types) else 0
+        waiting_segments = _compute_waiting_segments(inst, route, veh_type)
+        if waiting_segments:
+            spacer = " " * len(header_txt)
+            for client_id, wait in waiting_segments:
+                print(f"{spacer}* client {client_id} ({wait:.2f})")
 
     if 0 < showk < total_routes:
         remaining = total_routes - showk
