@@ -34,6 +34,7 @@ Utilisation rapide :
 from __future__ import annotations
 import os
 import sys
+import time 
 from math import isfinite
 from statistics import mean, stdev
 from typing import Any, Dict, List, Tuple
@@ -699,7 +700,7 @@ def action_list_all():
             rel = os.path.relpath(p, DATA_DIR)
             print(" -", rel)
     input("\n(Entrée) Retour au menu… ")
-
+    
 def action_list_recommended():
     print(f"\n📁 data_dir = {DATA_DIR}")
     items = list_instances_recommended(DATA_DIR)
@@ -931,39 +932,77 @@ def action_tests():
     input("\n(Entrée) Retour au menu… ")
 
     
+def _ask_int_with_default(prompt: str, default: int, minimum: int | None = None) -> int:
+    """Demande un entier en affichant la valeur par défaut."""
+    raw = input(f"{prompt} [{default}] > ").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"⚠️ Entrée invalide ('{raw}'), on garde {default}.")
+        return default
+    if minimum is not None and value < minimum:
+        print(f"⚠️ Valeur trop petite ({value}), on garde {default}.")
+        return default
+    return value
+
+
 def action_bench():
-    print("\n[Benchmarks] — N runs/instance, stats, GAP (si .sol), graphiques.")
-    print("Instances par défaut :")
+    print("\n🧪 Mode Benchmarks — comparer la stabilité du solveur sur plusieurs runs.")
+    print("Ce mode exécute chaque instance plusieurs fois, mesure le coût, le temps et la faisabilité.")
+    print("Appuie simplement sur Entrée pour accepter les propositions par défaut à chaque étape.")
+
+    print("\nÉtape 1 — Sélection des instances à évaluer")
+    print("   Instances recommandées :")
     for s in DEFAULTS["bench_instances"]:
-        print("  -", s)
-    raw = input("Changer la liste ? Chemins séparés par ';' (vide = garder par défaut) > ").strip()
+        print("    •", s)
+    print("   ➜ Fournis des chemins relatifs (depuis data/) séparés par ';' ou laisse vide.")
+    raw = input("   Instances ? > ").strip()
     if raw:
         instances = [x.strip() for x in raw.split(";") if x.strip()]
     else:
         instances = DEFAULTS["bench_instances"]
+    if not instances:
+        print("⚠️ Aucune instance fournie, retour au menu…")
+        input("(Entrée)")
+        return
 
-    try:
-        runs  = int(input(f"Nombre de runs [défaut: {DEFAULTS['runs']}] > ") or DEFAULTS["runs"])
-        iters = int(input(f"Itérations Tabu max [défaut: {DEFAULTS['tabu_iter']}] > ") or DEFAULTS["tabu_iter"])
-        stall = int(input(f"Arrêt si pas d'amélioration [défaut: {DEFAULTS['tabu_stall']}] > ") or DEFAULTS["tabu_stall"])
-    except ValueError:
-        print("⚠️ Entrée invalide, utilisation des valeurs par défaut.")
-        runs, iters, stall = DEFAULTS["runs"], DEFAULTS["tabu_iter"], DEFAULTS["tabu_stall"]
+    print("\nÉtape 2 — Réglages de l'expérience")
+    runs = _ask_int_with_default("   Nombre de runs par instance", DEFAULTS["runs"], minimum=1)
+    iters = _ask_int_with_default("   Itérations Tabu max", DEFAULTS["tabu_iter"], minimum=1)
+    stall = _ask_int_with_default("   Arrêt si pas d'amélioration", DEFAULTS["tabu_stall"], minimum=0)
 
-    save = input("Sauver les graphes (PNG) ? (o/n) [n] > ").strip().lower() == "o"
+    print("\nÉtape 3 — Sorties graphiques")
+    save = input("   Sauvegarder les graphes en PNG ? (o/n) [n] > ").strip().lower() == "o"
     if save:
-        outdir = input("Dossier de sortie [défaut: ./plots] > ").strip() or os.path.join(HERE, "plots")
+        default_out = os.path.join(HERE, "plots")
+        outdir = input(f"   Dossier de sortie [{default_out}] > ").strip() or default_out
         os.makedirs(outdir, exist_ok=True)
     else:
         outdir = None
-    show = input("Afficher les graphes à l'écran ? (o/n) [o] > ").strip().lower()
+    show = input("   Afficher les graphes à l'écran ? (o/n) [o] > ").strip().lower()
     show_plots = (show != "n")
+
+    print("\nRésumé de la campagne :")
+    print(f"   • Instances : {len(instances)} sélectionnée(s)")
+    for path in instances:
+        print("     -", path)
+    print(f"   • Runs / instance : {runs}")
+    print(f"   • Tabu max iter   : {iters}")
+    print(f"   • Seuil stagnation: {stall}")
+    if outdir:
+        print(f"   • Graphes sauvegardés dans : {outdir}")
+    else:
+        print("   • Pas de sauvegarde de graphes")
+    print(f"   • Affichage interactif : {'oui' if show_plots else 'non'}")
+    input("\n(Entrée) Lancer les benchmarks… ")
 
     # Config matplotlib
     import matplotlib
-    import matplotlib.pyplot as plt
     if outdir and not show_plots:
         matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
     for item in instances:
         try:
@@ -980,17 +1019,22 @@ def action_bench():
                 feas += int(res["feasible"])
 
             avg_c = mean(costs)
-            sd_c  = stdev(costs) if len(costs) > 1 else 0.0
+            sd_c = stdev(costs) if len(costs) > 1 else 0.0
             avg_t = mean(times)
 
-            print(f"\n📦 {os.path.basename(eff)}")
-            print(f"  ✅ Feasible runs : {feas}/{runs}")
-            print(f"  💰 Cost         : mean={avg_c:.2f}  std={sd_c:.2f}")
-            print(f"  ⏱️ Time         : mean={avg_t:.2f}s")
+            print("\n==========================================================")
+            print(f"📦 Instance : {os.path.basename(eff)}")
+            print(f"   ➜ Chemin : {os.path.relpath(eff, DATA_DIR)}")
+            print(f"   ✅ Runs faisables : {feas}/{runs}")
+            print(f"   💰 Coût (moyenne ± écart-type) : {avg_c:.2f} ± {sd_c:.2f}")
+            print(f"   ⏱️ Temps moyen par run       : {avg_t:.2f}s")
 
             if opt is not None:
                 gaps = [100.0 * (c - opt) / opt for c in costs]
-                print(f"  📉 GAP mean     : {mean(gaps):.2f}% (vs {os.path.basename(os.path.splitext(eff)[0]+'.sol')})")
+                ref = os.path.basename(os.path.splitext(eff)[0] + ".sol")
+                print(f"   📉 GAP moyen vs {ref} : {mean(gaps):.2f}%")
+            else:
+                print("   ℹ️ Aucun fichier .sol de référence trouvé.")
 
             # Boxplot
             plt.figure()
@@ -1020,13 +1064,14 @@ def action_bench():
         except Exception as e:
             print(f"❌ Erreur sur '{item}': {e}")
 
-    print("\nℹ️ Interprétation rapide :")
-    print("   • 'Feasible runs' = nombre de runs sans violation de contraintes.")
-    print("   • 'Cost mean/std' = coût moyen et dispersion (stabilité de la métaheuristique).")
-    print("   • 'GAP mean'      = écart moyen vs solution de référence (.sol) si disponible.")
+    print("\nℹ️ Comment lire les résultats :")
+    print("   • 'Runs faisables' indique combien de runs respectent toutes les contraintes.")
+    print("   • 'Coût' résume la qualité moyenne et la variabilité de la solution.")
+    print("   • 'GAP moyen' compare vos résultats à une solution de référence si elle existe.")
     if outdir:
-        print(f"   • Graphes PNG     = sauvegardés dans : {outdir}")
-    input("\n(Entrée) Retour au menu… ")
+        print(f"   • Les graphes PNG sont disponibles dans : {outdir}")
+    print("\n✅ Benchmarks terminés. Excellent boulot !")
+    input("(Entrée) Retour au menu… ")
 
 def action_change_defaults():
     print("\n[Paramètres par défaut] — Appuie sur Entrée pour conserver la valeur actuelle.")
