@@ -36,7 +36,7 @@ from __future__ import annotations
 import os
 import sys
 from statistics import mean, stdev
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -246,6 +246,45 @@ def _compute_waiting_segments(inst: Instance, route: List[int], veh_type: int) -
 
     return waiting_info
 
+def _build_route_timeline(
+    inst: Instance, route: List[int], veh_type: int
+) -> List[Dict[str, Any]]:
+    """Construit une chronologie (trajets + attentes) pour une tournée."""
+    if not route:
+        return []
+
+    coords = inst.coords
+    seq = [0] + route + [0]
+    current_time = inst.depot_open
+    timeline: List[Dict[str, Any]] = []
+
+    for prev, client in zip(seq, seq[1:]):
+        start_xy: Tuple[float, float] = (coords[prev][0], coords[prev][1])
+        end_xy: Tuple[float, float] = (coords[client][0], coords[client][1])
+
+        travel = float(inst.time[prev][client])
+        timeline.append({
+            "start": start_xy,
+            "end": end_xy,
+            "duration": max(0.0, travel),
+        })
+
+        arrival = current_time + travel
+        wait = 0.0
+        if client != 0:
+            wait = max(0.0, inst.window_a[client] - arrival)
+        if wait > 1e-9:
+            timeline.append({
+                "start": end_xy,
+                "end": end_xy,
+                "duration": wait,
+            })
+
+        service = inst.service[client] if client != 0 else 0.0
+        current_time = arrival + wait + service
+
+    return timeline
+
 
 
 def explain_result(inst: Instance, res: dict, showk: int) -> None:
@@ -331,7 +370,7 @@ def _sanitize_name_for_file(name: str) -> str:
     return "".join(safe).strip("_") or "instance"
 
 
-def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
+def show_routes_plot(inst: Instance, routes: List[List[int]], veh_types: List[int] | None = None) -> None:
     try:
         import matplotlib as mpl
         import matplotlib.pyplot as plt
@@ -388,12 +427,15 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         cmap = plt.get_cmap("tab20", max(1, len(routes)))
 
     mover_artists: List[tuple[int, Any]] = []
-    segments_by_route: Dict[int, List[tuple[tuple[float, float], tuple[float, float]]]] = {}
+    timed_segments_by_route: Dict[int, List[Dict[str, Any]]] = {}
+
+    if veh_types is None:
+        veh_types = [0 for _ in routes]
 
     for idx, route in enumerate(routes, start=1):
         route_key = idx - 1
         if not route:
-            segments_by_route[route_key] = []
+            timed_segments_by_route[route_key] = []
             continue
         path = [0] + route + [0]
         xs = [coords[i][0] for i in path]
@@ -406,12 +448,8 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         for client in route:
             ax.annotate(str(client), (coords[client][0], coords[client][1]),
                         textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8)
-        route_segments: List[tuple[tuple[float, float], tuple[float, float]]] = []
-        for start_idx, end_idx in zip(path, path[1:]):
-            start_xy = coords[start_idx]
-            end_xy = coords[end_idx]
-            route_segments.append((start_xy, end_xy))
-        segments_by_route[route_key] = route_segments
+        veh_type = veh_types[route_key] if route_key < len(veh_types) else 0
+        timed_segments_by_route[route_key] = _build_route_timeline(inst, route, veh_type)
 
     ax.set_xlabel("Coordonnée X")
     ax.set_ylabel("Coordonnée Y")
@@ -432,13 +470,40 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
     _apply_layout()
     fig.canvas.mpl_connect("resize_event", _apply_layout)
 
-    max_segments = max((len(seg) for seg in segments_by_route.values()), default=0)
+    steps_per_segment = 25
+    frames_by_route: Dict[int, List[tuple[Dict[str, Any], int]]] = {}
+    totals_by_route: Dict[int, int] = {}
+    max_total_frames = 0
 
-    if max_segments == 0:
+    for route_key, timeline in timed_segments_by_route.items():
+        if not timeline:
+            frames_by_route[route_key] = []
+            totals_by_route[route_key] = 0
+            continue
+
+        durations = [seg.get("duration", 0.0) for seg in timeline if seg.get("duration", 0.0) > 0]
+        avg_duration = sum(durations) / len(durations) if durations else 1.0
+
+        frame_segments: List[tuple[Dict[str, Any], int]] = []
+        total_route_frames = 0
+        for seg in timeline:
+            duration = max(0.0, float(seg.get("duration", 0.0)))
+            if duration <= 0:
+                frame_count = 1
+            else:
+                frame_count = max(1, int(round((duration / avg_duration) * steps_per_segment)))
+            frame_segments.append((seg, frame_count))
+            total_route_frames += frame_count
+
+        frames_by_route[route_key] = frame_segments
+        totals_by_route[route_key] = total_route_frames
+        if total_route_frames > max_total_frames:
+            max_total_frames = total_route_frames
+
+    if max_total_frames == 0:
         print("⚠️ Aucune tournée non vide à animer.")
 
-    steps_per_segment = 25
-    total_frames = max(1, max_segments * steps_per_segment)
+    total_frames = max(1, max_total_frames)
     anim_holder: dict[str, FuncAnimation | None] = {"anim": None}
 
     def init_positions():  # pragma: no cover - animation interactive
@@ -448,33 +513,43 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         return [m for _, m in mover_artists]
 
     def update(frame: int):  # pragma: no cover - animation interactive
-        if max_segments == 0:
+        if max_total_frames == 0:
             return [m for _, m in mover_artists]
 
-        seg_idx = min(frame // steps_per_segment, max(0, max_segments - 1))
-        progress = (frame % steps_per_segment) / max(1, steps_per_segment - 1)
-
         for idx_mover, mover in mover_artists:
-            route_segments = segments_by_route.get(idx_mover, [])
-            if not route_segments:
+            frame_segments = frames_by_route.get(idx_mover, [])
+            total_route_frames = totals_by_route.get(idx_mover, 0)
+            if not frame_segments or total_route_frames == 0:
                 mover.set_data([depot_x], [depot_y])
                 continue
 
-            if seg_idx >= len(route_segments):
-                last_xy = route_segments[-1][1]
+            if frame >= total_route_frames:
+                last_seg = frame_segments[-1][0]
+                last_xy = last_seg["end"]
                 mover.set_data([last_xy[0]], [last_xy[1]])
-            else:
-                start_xy, end_xy = route_segments[seg_idx]
-                x = start_xy[0] + (end_xy[0] - start_xy[0]) * progress
-                y = start_xy[1] + (end_xy[1] - start_xy[1]) * progress
-                mover.set_data([x], [y])
+                continue
+
+            remaining = frame
+            for seg, frame_count in frame_segments:
+                if remaining < frame_count:
+                    start_xy = seg["start"]
+                    end_xy = seg["end"]
+                    if frame_count == 1 or start_xy == end_xy:
+                        mover.set_data([end_xy[0]], [end_xy[1]])
+                    else:
+                        progress = remaining / max(1, frame_count - 1)
+                        x = start_xy[0] + (end_xy[0] - start_xy[0]) * progress
+                        y = start_xy[1] + (end_xy[1] - start_xy[1]) * progress
+                        mover.set_data([x], [y])
+                    break
+                remaining -= frame_count
         return [m for _, m in mover_artists]
 
     button_ax = fig.add_axes([0.72, 0.02, 0.25, 0.07])
     launch_button = Button(button_ax, "Lancer une animation", color="#e0e0e0", hovercolor="#d0d0d0")
 
     def on_click(_event):  # pragma: no cover - interaction utilisateur
-        if max_segments == 0:
+        if max_total_frames == 0:
             return
         anim_holder["anim"] = FuncAnimation(
             fig,
@@ -493,11 +568,13 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
     plt.show()
 
 
-def offer_visualizations(inst: Instance, routes: List[List[int]]) -> None:
+def offer_visualizations(
+    inst: Instance, routes: List[List[int]], veh_types: List[int] | None = None
+) -> None:
     if not routes:
         return
 
-    show_routes_plot(inst, routes)
+    show_routes_plot(inst, routes, veh_types)
         
 # -------------------------------------------------------------------
 # Actions de menu
@@ -614,7 +691,7 @@ def action_demo():
         explain_instance(eff)
         res = solve_vrp(inst, rng_seed=seed, tabu_max_iter=iters, tabu_no_improve=stall)
         explain_result(inst, res, showk)
-        offer_visualizations(inst, res["routes"])
+        offer_visualizations(inst, res["routes"], res.get("veh_types"))
     except Exception as e:
         print("\n❌ Erreur de chargement/exécution :", e)
         print("   → Essaie avec une instance sous 'data/cvrplib/...'.")
