@@ -2,16 +2,18 @@
 """
 main.py — Lanceur interactif "tout-en-un" pour le projet Cluster-First / Route-Second
 
-✅ Ce que fait ce script :
-- Fournit un MENU clair (1/2/3/4/5/0) pour :
+ Ce que fait ce script :
+- Fournit un MENU clair (1/2/3/4/5/6/7/0) pour :
   [1] Lister les instances détectées dans ./data
-  [2] Démo (1 run) — lancer le solveur sur une instance et afficher les 1ères routes
-  [3] Tests rapides — vérifier la faisabilité (capacité + fenêtres) sur 1..n instances
-  [4] Benchmarks — N runs/instance, statistiques, GAP (si .sol), graphiques
-  [5] Changer les paramètres par défaut (seed, itérations Tabu, etc.)
+  [2] Lister les instances "recommandées"
+  [3] Démo (1 run) — lancer le solveur sur une instance et afficher les 1ères routes
+  [4] Tests rapides — vérifier la faisabilité (capacité + fenêtres) sur 1..n instances
+  [5] Benchmarks — N runs/instance, statistiques, GAP (si .sol), graphiques
+  [6] Explorateur visuel — générer/éditer un layout synthétique en direct
+  [7] Changer les paramètres par défaut (seed, itérations Tabu, etc.)
   [0] Quitter
 
-✨ Confort et robustesse :
+ Confort et robustesse :
 - Résolution d’instance flexible : nom simple ("X-n101-k25.vrp") ou chemin relatif/absolu.
 - Auto-remap des fichiers non standard à la racine vers la version "cvrplib" officielle.
   -> Exemple : "A-n32-k5.vrp" (racine) sera remplacé par "data/cvrplib/A-n32-k5.vrp" si dispo.
@@ -21,7 +23,7 @@ main.py — Lanceur interactif "tout-en-un" pour le projet Cluster-First / Route
   • "Cost": coût total (distance, etc. selon l’instance)
   • "Routes": premières séquences de clients desservies
 
-⚙️ Prérequis :
+ Prérequis :
 - Lancer Python depuis la RACINE du projet (le dossier qui contient /solver, /data, etc.)
 - Assurez-vous que solver/__init__.py existe (fichier vide suffit).
 - Dépendances : vrplib, numpy, matplotlib (installées via pip)
@@ -60,6 +62,11 @@ except Exception as e:
     print("Détail de l'erreur :", e)
     sys.exit(1)
 
+
+try:
+    from experiments import interactive_layout
+except Exception:
+    interactive_layout = None
 # -------------------------------------------------------------------
 # Utilitaires — recherche d’instances et remap auto vers cvrplib
 # -------------------------------------------------------------------
@@ -394,6 +401,33 @@ def action_tests():
         print("💡 Astuce : privilégie les fichiers sous 'data/cvrplib/...'.")
     input("\n(Entrée) Retour au menu… ")
 
+def action_layout_explorer():
+    print("\n[Explorateur visuel] — Crée/édite un layout synthétique en direct.")
+    if interactive_layout is None:
+        print("❌ Module indisponible : vérifie que 'experiments/interactive_layout.py' est présent et les dépendances installées.")
+        input("\n(Entrée) Retour au menu… ")
+        return
+
+    print("💡 Ce mode ouvre une fenêtre Matplotlib dédiée (équivalent à 'python experiments/interactive_layout.py').")
+    print("   Tu peux modifier le nombre de clients, routes, déplacer/ajouter/supprimer des points et exporter en CSV.")
+
+    seed_raw = input("Graine aléatoire (entier, vide = aléatoire) > ").strip()
+    seed = None
+    if seed_raw:
+        try:
+            seed = int(seed_raw)
+        except ValueError:
+            print("⚠️ Entrée invalide, utilisation d'une graine aléatoire.")
+            seed = None
+
+    try:
+        interactive_layout.launch(seed=seed)
+    except Exception as exc:
+        print("❌ Impossible de lancer l'explorateur :", exc)
+
+    input("\n(Entrée) Retour au menu… ")
+    
+    
 def action_bench():
     print("\n[Benchmarks] — N runs/instance, stats, GAP (si .sol), graphiques.")
     print("Instances par défaut :")
@@ -520,15 +554,17 @@ def main_menu():
         print(" [3] Démo (1 run)             — exécution sur 1 instance + aperçu des routes")
         print(" [4] Tests rapides            — faisabilité (capacité + fenêtres) sur 1..n instances")
         print(" [5] Benchmarks               — N runs/instance + stats + GAP + graphes")
-        print(" [6] Changer paramètres       — seed, itérations Tabu, etc.")
+        print(" [6] Explorateur visuel       — générer/éditer un layout synthétique en direct")
+        print(" [7] Changer paramètres       — seed, itérations Tabu, etc.")
         print(" [0] Quitter")
-        chx = input("\nVotre choix [0-6] > ").strip()
+        chx = input("\nVotre choix [0-7] > ").strip()
         if   chx == "1": action_list_all()
         elif chx == "2": action_list_recommended()
         elif chx == "3": action_demo()
         elif chx == "4": action_tests()
         elif chx == "5": action_bench()
-        elif chx == "6": action_change_defaults()
+        elif chx == "6": action_layout_explorer()
+        elif chx == "7": action_change_defaults()
         elif chx == "0":
             print("À bientôt 👋")
             return
