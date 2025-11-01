@@ -322,7 +322,27 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
                 print("⚠️ Backend matplotlib non interactif : impossible d'afficher le plan.")
                 return
 
-    fig, ax = plt.subplots(figsize=(7, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Essaye d'occuper automatiquement l'espace disponible dans la fenêtre GUI
+    try:  # pragma: no cover - dépend du backend local
+        manager = plt.get_current_fig_manager()
+        if hasattr(manager, "window"):
+            try:
+                manager.window.state("zoomed")  # TkAgg
+            except Exception:
+                try:
+                    manager.window.showMaximized()  # Qt5Agg
+                except Exception:
+                    pass
+        elif hasattr(manager, "frame"):
+            try:
+                manager.frame.Maximize(True)  # WxAgg
+            except Exception:
+                pass
+    except Exception:
+        pass
+    
     ax.set_title(f"Plan des tournées — {inst.name}")
     coords = inst.coords
     depot_x, depot_y = coords[0]
@@ -369,7 +389,14 @@ def show_routes_plot(inst: Instance, routes: List[List[int]]) -> None:
         borderaxespad=0.6,
         fontsize=8,
     )
-    fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
+    def _apply_layout(_event=None):  # pragma: no cover - interaction graphique
+        try:
+            fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
+        except Exception:
+            pass
+
+    _apply_layout()
+    fig.canvas.mpl_connect("resize_event", _apply_layout)
 
     max_segments = max((len(seg) for seg in segments_by_route.values()), default=0)
 
