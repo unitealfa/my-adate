@@ -226,25 +226,90 @@ def explain_instance(inst_path: str):
     print("   • Objectif : minimiser le coût total (distance/temps) sous contraintes (capacité, fenêtres, etc.)")
 
 
-def _compute_waiting_segments(inst: Instance, route: List[int], veh_type: int) -> List[tuple[int, float]]:
-    """Retourne les (client, attente) pour une tournée donnée."""
+def _format_number(value: float) -> str:
+    """Formate un nombre : entier sans décimales sinon 2 décimales."""
+    rounded = round(value)
+    if abs(value - rounded) < 1e-6:
+        return str(int(rounded))
+    return f"{value:.2f}"
+
+
+def _safe_time_window(inst: Instance, client: int) -> Tuple[float, float] | None:
+    """Récupère la fenêtre temporelle [a, b] si elle est disponible."""
+    window_a = getattr(inst, "window_a", None)
+    window_b = getattr(inst, "window_b", None)
+    if window_a is None or window_b is None:
+        return None
+
+    try:
+        open_time = float(window_a[client])
+        close_time = float(window_b[client])
+    except (IndexError, TypeError):
+        return None
+
+    return open_time, close_time
+
+
+def _compute_waiting_segments(
+    inst: Instance, route: List[int], veh_type: int
+) -> List[Dict[str, Any]]:
+    """Retourne les détails temporels (attente, fenêtres, service) d'une tournée."""
     if not route:
         return []
 
     seq = [0] + route
-    current_time = inst.depot_open
-    waiting_info: List[tuple[int, float]] = []
+    current_time = getattr(inst, "depot_open", 0.0)
+    waiting_info: List[Dict[str, Any]] = []
+
+    service_times = getattr(inst, "service", None)
 
     for prev, client in zip(seq, seq[1:]):
-        travel = inst.time[prev][client]
+        travel = float(inst.time[prev][client]) if hasattr(inst, "time") else 0.0
         arrival = current_time + travel
-        wait = max(0.0, inst.window_a[client] - arrival)
-        if wait > 1e-9:
-            waiting_info.append((client, wait))
-        start_service = arrival + wait
-        current_time = start_service + inst.service[client]
+        window = _safe_time_window(inst, client)
+        wait = 0.0
+        if window is not None:
+            wait = max(0.0, window[0] - arrival)
 
-    return waiting_info
+        raw_service = 0.0
+        if service_times is not None:
+            try:
+                raw_service = float(service_times[client])
+            except (IndexError, TypeError):
+                raw_service = 0.0
+
+        start_service = arrival + wait
+        current_time = start_service + raw_service
+
+        if client == 0:
+            continue
+
+        waiting_info.append(
+            {
+                "client": client,
+                "wait": wait,
+                "window": window,
+                "service": raw_service,
+                "arrival": arrival,
+                "start_service": start_service,
+            }
+        )
+
+    filtered: List[Dict[str, Any]] = []
+    for info in waiting_info:
+        window = info.get("window")
+        has_window = False
+        if window is not None:
+            start, end = window
+            has_window = abs(start) > 1e-9 or abs(end) > 1e-9
+        wait = info.get("wait", 0.0)
+        service = info.get("service", 0.0)
+        if has_window or wait > 1e-9 or service > 1e-9:
+            if not has_window:
+                info["window"] = None
+            filtered.append(info)
+
+    return filtered
 
 def _build_route_timeline(
     inst: Instance, route: List[int], veh_type: int
@@ -335,8 +400,30 @@ def explain_result(inst: Instance, res: dict, showk: int) -> None:
         waiting_segments = _compute_waiting_segments(inst, route, veh_type)
         if waiting_segments:
             spacer = " " * len(header_txt)
-            for client_id, wait in waiting_segments:
-                print(f"{spacer}* client {client_id} ({wait:.2f})")
+            for details in waiting_segments:
+                client_id = details["client"]
+                parts: List[str] = []
+
+                window = details.get("window")
+                if window:
+                    start, end = window
+                    if abs(start) > 1e-9 or abs(end) > 1e-9:
+                        parts.append(
+                            f"fenêtre [{_format_number(start)}, {_format_number(end)}]"
+                        )
+
+                service = details.get("service", 0.0)
+                if service > 1e-9:
+                    parts.append(f"service {_format_number(service)}")
+
+                wait = details.get("wait", 0.0)
+                if wait > 1e-9:
+                    parts.append(f"attente {_format_number(wait)}")
+
+                if not parts:
+                    continue
+
+                print(f"{spacer}* client {client_id} — {', '.join(parts)}")
 
     if 0 < showk < total_routes:
         remaining = total_routes - showk
@@ -445,10 +532,30 @@ def show_routes_plot(inst: Instance, routes: List[List[int]], veh_types: List[in
         mover, = ax.plot([depot_x], [depot_y], marker="o", markersize=10,
                          color=color, alpha=0.9, visible=False)
         mover_artists.append((route_key, mover))
-        for client in route:
-            ax.annotate(str(client), (coords[client][0], coords[client][1]),
-                        textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8)
         veh_type = veh_types[route_key] if route_key < len(veh_types) else 0
+        client_details = {
+            info["client"]: info for info in _compute_waiting_segments(inst, route, veh_type)
+        }
+        for client in route:
+            label_lines = [str(client)]
+            details = client_details.get(client)
+            if details:
+                window = details.get("window")
+                if window and (abs(window[0]) > 1e-9 or abs(window[1]) > 1e-9):
+                    label_lines.append(
+                        f"[{_format_number(window[0])}, {_format_number(window[1])}]"
+                    )
+                service = details.get("service", 0.0)
+                if service > 1e-9:
+                    label_lines.append(f"serv {_format_number(service)}")
+            ax.annotate(
+                "\n".join(label_lines),
+                (coords[client][0], coords[client][1]),
+                textcoords="offset points",
+                xytext=(0, 6),
+                ha="center",
+                fontsize=8,
+            )
         timed_segments_by_route[route_key] = _build_route_timeline(inst, route, veh_type)
 
     ax.set_xlabel("Coordonnée X")
@@ -774,13 +881,27 @@ def action_tests():
         100,
         min_value=1,
     )
+    
+    showk = ask_int(
+        "   - Détails des tournées (0 = toutes) [défaut 0] > ",
+        DEFAULTS["show_routes"],
+        min_value=0,
+    )
+    
+    showk = ask_int(
+        "   - Détails des tournées (0 = toutes) [défaut 0] > ",
+        DEFAULTS["show_routes"],
+        min_value=0,
+    )
 
     ok_all = True
     for item in instances:
         try:
             req = resolve_instance(item, DATA_DIR)
             inst, eff = try_load_instance(req)
+            explain_instance(eff)
             res = solve_vrp(inst, rng_seed=42, tabu_max_iter=iters, tabu_no_improve=stall)
+            explain_result(inst, res, showk)
             feas = res["feasible"]
             if not feas:
                 ok_all = False
@@ -797,6 +918,7 @@ def action_tests():
                     print(f"❌ {os.path.basename(eff)} -> violations sur {len(bad)} routes")
                 else:
                     print(f"✅ OK: {os.path.basename(eff)} | veh: {res['used_vehicles']} | cost: {res['cost']:.2f}")
+                    offer_visualizations(inst, res["routes"], res.get("veh_types"))
         except Exception as e:
             ok_all = False
             print(f"❌ Erreur sur '{item}': {e}")
