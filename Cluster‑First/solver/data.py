@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import hypot, inf, isfinite
+from math import hypot, inf, isfinite, ceil
 from pathlib import Path
 from typing import List
 
@@ -26,8 +26,22 @@ class Instance:
     depot_close: float               # b0
 
 
-def _euclid(a: List[float], b: List[float]) -> float:
-    return hypot(a[0] - b[0], a[1] - b[1])
+def _distance_with_type(a: List[float], b: List[float], edge_type: str) -> float:
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    euclid = hypot(dx, dy)
+    etype = edge_type.upper()
+
+    if etype == "EUC_2D":
+        # Arrondi standard VRPLIB
+        return float(int(euclid + 0.5))
+    if etype == "CEIL_2D":
+        return float(ceil(euclid))
+    if etype == "MAN_2D":
+        return float(abs(dx) + abs(dy))
+
+    # Fallback: distance Euclidienne exacte
+    return euclid
 
 
 def build_candidate_lists(dist: List[List[float]], m: int = 20) -> List[List[int]]:
@@ -51,12 +65,13 @@ def _finalize_instance(
     vehicle_count: float | None,
     speed: float,
     candidate_m: int,
+    edge_weight_type: str = "EUC_2D",
 ) -> Instance:
     dim = len(coords)
     dist: List[List[float]] = [[0.0 for _ in range(dim)] for _ in range(dim)]
     for i in range(dim):
         for j in range(dim):
-            dist[i][j] = _euclid(coords[i], coords[j])
+            dist[i][j] = _distance_with_type(coords[i], coords[j], edge_weight_type)
 
     factor = 1.0 / max(1e-9, speed)
     time: List[List[float]] = [[dist[i][j] * factor for j in range(dim)] for i in range(dim)]
@@ -145,10 +160,11 @@ def _parse_cvrp(path: Path, speed: float, candidate_m: int) -> Instance:
     capacity = float(meta.get("CAPACITY", "1e12"))
     vehicles = meta.get("VEHICLES")
     veh_count = float(vehicles) if vehicles is not None else None
+    edge_type = meta.get("EDGE_WEIGHT_TYPE", "EUC_2D")
 
     name = meta.get("NAME", path.name)
     return _finalize_instance(name, coords, demand, service, window_a, window_b,
-                              capacity, veh_count, speed, candidate_m)
+                              capacity, veh_count, speed, candidate_m, edge_type)
 
 
 def _parse_solomon(path: Path, speed: float, candidate_m: int) -> Instance:
@@ -229,7 +245,7 @@ def _parse_solomon(path: Path, speed: float, candidate_m: int) -> Instance:
         capacity = 1e12
 
     return _finalize_instance(name, coords, demand, service, window_a, window_b,
-                              capacity, num_veh, speed, candidate_m)
+                              capacity, num_veh, speed, candidate_m, "EUC_2D")
 
 
 def load_vrplib(path_or_name: str, speed: float = 1.0, candidate_m: int = 20) -> Instance:
