@@ -3,7 +3,7 @@ from typing import List, Tuple, Dict
 import random
 
 from .data import Instance
-from .evaluator import route_cost_with_penalties
+from .evaluator import RouteState
 from .neighborhoods import (
     two_opt_neighbors, apply_two_opt,
     relocate_neighbors, apply_relocate,
@@ -26,7 +26,8 @@ class TabuSearch:
         Tabu Search intra-route simple mêlant 2-opt, relocate et swap.
         """
         best = route[:]
-        best_cost = route_cost_with_penalties(inst, best, veh_type, self.lamQ, self.lamT)
+        state = RouteState(inst, veh_type, self.lamQ, self.lamT, route[:])
+        best_cost = state.penalized_cost
         cur = best[:]
         tabu: Dict[tuple, int] = {}
         cur_iter = 0
@@ -44,7 +45,7 @@ class TabuSearch:
                 if move_type == "2opt":
                     for (i, j) in two_opt_neighbors(cur):
                         cand = apply_two_opt(cur, i, j)
-                        cost = route_cost_with_penalties(inst, cand, veh_type, self.lamQ, self.lamT)
+                        cost = state.evaluate_candidate(cand)
                         key = ("2opt", i, j)
                         # Règle tabou + aspiration
                         if tabu.get(key, 0) > cur_iter and cost >= best_cost:
@@ -57,7 +58,7 @@ class TabuSearch:
                 elif move_type == "reloc":
                     for (i, j) in relocate_neighbors(cur):
                         cand = apply_relocate(cur, i, j)
-                        cost = route_cost_with_penalties(inst, cand, veh_type, self.lamQ, self.lamT)
+                        cost = state.evaluate_candidate(cand)
                         key = ("reloc", i, j)
                         if tabu.get(key, 0) > cur_iter and cost >= best_cost:
                             continue
@@ -69,7 +70,7 @@ class TabuSearch:
                 else:  # swap
                     for (i, j) in swap_neighbors(cur):
                         cand = apply_swap(cur, i, j)
-                        cost = route_cost_with_penalties(inst, cand, veh_type, self.lamQ, self.lamT)
+                        cost = state.evaluate_candidate(cand)
                         key = ("swap", i, j)
                         if tabu.get(key, 0) > cur_iter and cost >= best_cost:
                             continue
@@ -82,6 +83,7 @@ class TabuSearch:
                 break
 
             cur = move_best
+            state.update(cur)
             # Tenure dynamique
             tenure = self.rng.randint(self.tenure_min, self.tenure_max)
             tabu[move_apply] = cur_iter + tenure
