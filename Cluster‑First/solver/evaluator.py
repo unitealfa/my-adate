@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Tuple
+
 from .data import Instance
+
 
 @dataclass
 class RouteEval:
@@ -13,40 +16,6 @@ class RouteEval:
     waiting_total: float
     tw_violation: float
     capacity_excess: float
-
-
-from __future__ import annotations
-from __future__ import annotations
-from dataclasses import dataclass
-from dataclasses import dataclass
-from typing import List, Tuple
-from typing import List, Tuple
-
-from .data import Instance
-from .data import Instance
-
-
-@dataclass
-@dataclass
-class RouteEval:
-class RouteEval:
-    feasible: bool
-    feasible: bool
-    cost: float
-    cost: float
-    distance: float
-    distance: float
-    time_end: float
-    time_end: float
-    load: float
-    load: float
-    waiting_total: float
-    waiting_total: float
-    tw_violation: float
-    tw_violation: float
-    capacity_excess: float
-    capacity_excess: float
-
 
 
 @dataclass
