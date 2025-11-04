@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import math
 import random
 import statistics
 from typing import List
@@ -26,6 +28,107 @@ def _route_cost_if_feasible(inst: Instance, route: List[int], veh_type: int) -> 
     """Helper retournant (cost, feasible) pour une route donnée."""
     eval_res = eval_route(inst, route, veh_type)
     return eval_res.cost, eval_res.feasible
+
+
+def _required_vehicle_count(inst: Instance, veh_types: List[int]) -> int | None:
+    """Return the required number of vehicles when the instance enforces it."""
+
+    if not veh_types:
+        return None
+
+    base_type = veh_types[0]
+    if base_type >= len(inst.num_veh_by_type):
+        return None
+
+    required = inst.num_veh_by_type[base_type]
+    if not math.isfinite(required) or required >= 1e8:
+        return None
+
+    return int(round(required))
+
+
+def _split_route_for_additional_vehicle(
+    inst: Instance,
+    routes: List[List[int]],
+    veh_types: List[int],
+    donor_idx: int,
+) -> bool:
+    """Move one customer from the donor route to create a new vehicle route."""
+
+    donor_route = routes[donor_idx]
+    if len(donor_route) <= 1:
+        return False
+
+    moved = donor_route.pop()
+    new_route = [moved]
+    if eval_route(inst, new_route, veh_types[donor_idx]).feasible:
+        routes.append(new_route)
+        veh_types.append(veh_types[donor_idx])
+        return True
+
+    # If single customer route somehow infeasible, restore and abort.
+    donor_route.append(moved)
+    return False
+
+
+def _enforce_vehicle_usage(
+    inst: Instance,
+    routes: List[List[int]],
+    veh_types: List[int],
+) -> tuple[List[List[int]], List[int]]:
+    """Ensure all available vehicles are used and no route is left empty."""
+
+    routes = [r[:] for r in routes]
+    veh_types = veh_types[:]
+
+    required = _required_vehicle_count(inst, veh_types if veh_types else [0])
+
+    if required is None:
+        # Simply prune empty routes when there is no fixed fleet size.
+        pruned_routes, pruned_types = _prune_empty_routes(routes, veh_types)
+        return pruned_routes, pruned_types
+
+    if required <= 0:
+        return [], []
+
+    total_customers = sum(len(r) for r in routes)
+    if required > total_customers:
+        raise ValueError(
+            "Impossible d'affecter tous les véhicules : plus de camions que de clients."
+        )
+
+    # Remove empty routes up-front; they will be recreated properly below.
+    routes, veh_types = _prune_empty_routes(routes, veh_types)
+
+    if not routes:
+        raise ValueError(
+            "Impossible de construire des tournées initiales pour répartir les clients entre les camions."
+        )
+
+    while len(routes) < required:
+        donor_idx = max(range(len(routes)), key=lambda idx: len(routes[idx]))
+        if not _split_route_for_additional_vehicle(inst, routes, veh_types, donor_idx):
+            raise ValueError(
+                "Impossible de créer une tournée pour chaque camion sans violer les contraintes."
+            )
+
+    # Remove empty routes beyond the required count, then ensure the required vehicles are filled.
+    routes, veh_types = _prune_empty_routes(routes, veh_types)
+
+    for idx in range(min(required, len(routes))):
+        if routes[idx]:
+            continue
+        donor_idx = max(
+            (i for i in range(len(routes)) if len(routes[i]) > 1),
+            key=lambda i: len(routes[i]),
+            default=None,
+        )
+        if donor_idx is None:
+            raise ValueError("Aucun client disponible pour remplir un camion vide.")
+        customer = routes[donor_idx].pop()
+        routes[idx] = [customer]
+
+    return routes, veh_types
 
 
 def inter_routes_improvement(inst: Instance, routes: List[List[int]], veh_types: List[int]) -> bool:
@@ -290,41 +393,54 @@ def solve_vrp(inst: Instance,
         local_trials = 3
         pert_strength = 4
 
-        routes, veh_types = sweep_build(
-            inst,
-            veh_type=0,
-            num_starts=base_starts,
-            rng_seed=seed,
-            angle_jitter=angle_jitter,
-            local_shuffle_trials=local_trials,
-            perturbation_strength=pert_strength,
-        )
+        required_veh = _required_vehicle_count(inst, [0])
+        original_fixed_costs = inst.fixed_cost[:]
+        try:
+            if required_veh is not None:
+                inst.fixed_cost[0] = original_fixed_costs[0] + 10000.0
 
-        # 2) Route-Second (Tabu Search par route)
-        adj_max_iter = tabu_max_iter
-        adj_no_improve = tabu_no_improve
-        if inst.n >= 80:
-            adj_max_iter = max(adj_max_iter, 2500)
-            adj_no_improve = max(adj_no_improve, 300)
+            routes, veh_types = sweep_build(
+                inst,
+                veh_type=0,
+                num_starts=base_starts,
+                rng_seed=seed,
+                angle_jitter=angle_jitter,
+                local_shuffle_trials=local_trials,
+                perturbation_strength=pert_strength,
+                required_vehicles=required_veh,
+            )
 
-        ts = TabuSearch(
-            lamQ=lamQ,
-            lamT=lamT,
-            max_iter=adj_max_iter,
-            no_improve_limit=adj_no_improve,
-            rng_seed=seed,
-        )
-        for r in range(len(routes)):
-            routes[r] = ts.improve_route(inst, routes[r], veh_type=veh_types[r])
+            # 2) Route-Second (Tabu Search par route)
+            adj_max_iter = tabu_max_iter
+            adj_no_improve = tabu_no_improve
+            if inst.n >= 80:
+                adj_max_iter = max(adj_max_iter, 2500)
+                adj_no_improve = max(adj_no_improve, 300)
 
-        # 3) Raffinement inter-routes avec ré-optimisation intra-route
-        for _ in range(3):
-            improved = inter_routes_improvement(inst, routes, veh_types)
-            if not improved:
-                break
+            ts = TabuSearch(
+                lamQ=lamQ,
+                lamT=lamT,
+                max_iter=adj_max_iter,
+                no_improve_limit=adj_no_improve,
+                rng_seed=seed,
+            )
             for r in range(len(routes)):
-                if routes[r]:
-                    routes[r] = ts.improve_route(inst, routes[r], veh_type=veh_types[r])
+                routes[r] = ts.improve_route(inst, routes[r], veh_type=veh_types[r])
+
+            # 3) Raffinement inter-routes avec ré-optimisation intra-route
+            for _ in range(3):
+                improved = inter_routes_improvement(inst, routes, veh_types)
+                if not improved:
+                    break
+                for r in range(len(routes)):
+                    if routes[r]:
+                        routes[r] = ts.improve_route(inst, routes[r], veh_type=veh_types[r])
+
+            routes, veh_types = _enforce_vehicle_usage(inst, routes, veh_types)
+            for r in range(len(routes)):
+                routes[r] = ts.improve_route(inst, routes[r], veh_type=veh_types[r])
+        finally:
+            inst.fixed_cost[:] = original_fixed_costs
 
         # Évaluation finale (sans pénalités)
         cost, dist = solution_cost(inst, routes, veh_types, lamQ=0.0, lamT=0.0)

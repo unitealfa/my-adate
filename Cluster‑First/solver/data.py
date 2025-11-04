@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from math import hypot, inf, isfinite, ceil
 from pathlib import Path
 from typing import List
+import re
 
 
 @dataclass
@@ -160,7 +161,19 @@ def _parse_cvrp(path: Path, speed: float, candidate_m: int) -> Instance:
     capacity = float(meta.get("CAPACITY", "1e12"))
     vehicles = meta.get("VEHICLES")
     veh_count = float(vehicles) if vehicles is not None else None
+    if veh_count is None:
+        comment = meta.get("COMMENT")
+        if comment:
+            match = re.search(r"(no\s+of\s+trucks|number\s+of\s+vehicles)\s*[:=]\s*(\d+)", comment, re.IGNORECASE)
+            if match:
+                veh_count = float(match.group(2))
     edge_type = meta.get("EDGE_WEIGHT_TYPE", "EUC_2D")
+
+    if veh_count is None:
+        inferred_name = meta.get("NAME", path.name)
+        match = re.search(r"-k(\d+)", inferred_name, re.IGNORECASE)
+        if match:
+            veh_count = float(match.group(1))
 
     name = meta.get("NAME", path.name)
     return _finalize_instance(name, coords, demand, service, window_a, window_b,

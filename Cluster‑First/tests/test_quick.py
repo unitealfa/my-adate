@@ -17,6 +17,10 @@ def quick_check(path_vrp):
     for r, k in zip(res["routes"], res["veh_types"]):
         er = eval_route(inst, r, k)
         assert er.capacity_excess == 0.0 and er.tw_violation == 0.0
+    required = inst.num_veh_by_type[0]
+    if required < 1e8:
+        assert len(res["routes"]) >= int(round(required)), "Tous les camions disponibles doivent être utilisés"
+        assert all(len(route) > 0 for route in res["routes"]), "Aucun camion ne doit rester vide"
     print("OK:", os.path.basename(path_vrp), "| veh:", res["used_vehicles"], "| cost:", f"{res['cost']:.2f}")
 
 if __name__ == "__main__":
