@@ -58,24 +58,33 @@ def run_experiment(path_vrp: str, runs: int = 20):
     inst = load_vrplib(path_vrp)
     opt_cost = read_opt_cost_local(path_vrp)
 
-    costs, times = [], []
+    costs, times, makespans = [], [], []
     feas_count = 0
 
     for r in range(runs):
         t0 = time.perf_counter()
         res = solve_vrp(inst, rng_seed=r, tabu_max_iter=1500, tabu_no_improve=150)
-        times.append(time.perf_counter() - t0)
+        elapsed = time.perf_counter() - t0
+        times.append(elapsed)
         feas_count += int(res["feasible"])
         costs.append(res["cost"])
+        mksp = float(res.get("makespan", 0.0))
+        makespans.append(mksp)
+
+        print(
+            f"    Run {r + 1:02d}/{runs}: duration={elapsed:.2f}s · dernier camion au dépôt={mksp:.2f}"
+        )
 
     avg_cost = mean(costs)
     std_cost = stdev(costs) if len(costs) > 1 else 0.0
     avg_time = mean(times)
+    avg_makespan = mean(makespans) if makespans else 0.0
 
     print(f"\nInstance {os.path.basename(path_vrp)}")
     print(f"  Feasible runs: {feas_count}/{runs}")
     print(f"  Cost: mean={avg_cost:.2f}  std={std_cost:.2f}")
     print(f"  Time: mean={avg_time:.2f}s")
+    print(f"  Makespan (dernier camion): mean={avg_makespan:.2f}")
 
     if opt_cost is not None:
         gaps = [100.0 * (c - opt_cost) / opt_cost for c in costs]
