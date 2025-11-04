@@ -446,6 +446,12 @@ def explain_result(inst: Instance, res: dict, showk: int) -> None:
         "   • Coût total optimisé     : "
         f"{cost:.2f} (identique à la distance si l'instance n'impose pas d'autres coûts)"
     )
+    makespan = res.get("makespan")
+    if makespan is not None:
+        print(
+            "   • Retour du dernier véhicule : "
+            f"{_format_number(makespan)} unité(s) de temps après le départ du dépôt"
+        )
     routes = res.get("routes", [])
     total_routes = len(routes)
     print(f"   • Nombre de tournées générées : {total_routes}")
@@ -462,6 +468,8 @@ def explain_result(inst: Instance, res: dict, showk: int) -> None:
         routes_to_show = routes[:showk]
         
     veh_types = res.get("veh_types", [0 for _ in routes])
+    route_durations = res.get("route_durations", [])
+    route_end_times = res.get("route_end_times", [])
 
     for idx, route in enumerate(routes_to_show, start=1):
         if not route:
@@ -474,8 +482,16 @@ def explain_result(inst: Instance, res: dict, showk: int) -> None:
         veh_idx = idx - 1
         veh_type = veh_types[veh_idx] if veh_idx < len(veh_types) else 0
         waiting_segments = _compute_waiting_segments(inst, route, veh_type)
+        spacer = " " * len(header_txt)
+
+        if veh_idx < len(route_durations):
+            duration = route_durations[veh_idx]
+            end_time = route_end_times[veh_idx] if veh_idx < len(route_end_times) else None
+            end_txt = _format_number(end_time) if end_time is not None else "?"
+            print(
+                f"{spacer}⏱️ Durée totale : {_format_number(duration)} (retour à t={end_txt})"
+            )        
         if waiting_segments:
-            spacer = " " * len(header_txt)
             for details in waiting_segments:
                 client_id = details["client"]
                 parts: List[str] = []
@@ -993,8 +1009,11 @@ def action_tests():
                     ok_all = False
                     print(f"❌ {os.path.basename(eff)} -> violations sur {len(bad)} routes")
                 else:
-                    print(f"✅ OK: {os.path.basename(eff)} | veh: {res['used_vehicles']} | cost: {res['cost']:.2f}")
-                    offer_visualizations(inst, res["routes"], res.get("veh_types"))
+                    mksp = res.get("makespan")
+                    mksp_txt = f" | durée max: {_format_number(mksp)}" if mksp is not None else ""
+                    print(
+                        f"✅ OK: {os.path.basename(eff)} | veh: {res['used_vehicles']} | cost: {res['cost']:.2f}{mksp_txt}"
+                    )
         except Exception as e:
             ok_all = False
             print(f"❌ Erreur sur '{item}': {e}")

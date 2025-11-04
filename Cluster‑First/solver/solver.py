@@ -314,7 +314,13 @@ def solve_vrp(inst: Instance,
         # Évaluation finale (sans pénalités)
         cost, dist = solution_cost(inst, routes, veh_types, lamQ=0.0, lamT=0.0)
         nb_veh = sum(1 for r in routes if len(r) > 0)
-        feas = all(eval_route(inst, r, veh_types[i]).feasible for i, r in enumerate(routes))
+        route_evals = [eval_route(inst, r, veh_types[i]) for i, r in enumerate(routes)]
+        feas = all(ev.feasible for ev in route_evals)
+
+        depot_open = getattr(inst, "depot_open", 0.0)
+        route_end_times = [ev.time_end for ev in route_evals]
+        route_durations = [max(0.0, end - depot_open) for end in route_end_times]
+        makespan = max(route_durations) if route_durations else 0.0
 
         return {
             "seed": seed,
@@ -324,6 +330,9 @@ def solve_vrp(inst: Instance,
             "distance": dist,
             "used_vehicles": nb_veh,
             "feasible": feas,
+            "route_end_times": route_end_times,
+            "route_durations": route_durations,
+            "makespan": makespan,
         }
 
     if seeds is None or not seeds:
@@ -360,6 +369,9 @@ def solve_vrp(inst: Instance,
         "used_vehicles": best_run["used_vehicles"],
         "feasible": best_run["feasible"],
         "best_seed": best_run["seed"],
+        "route_end_times": best_run.get("route_end_times", []),
+        "route_durations": best_run.get("route_durations", []),
+        "makespan": best_run.get("makespan", 0.0),
         "runs": run_results,
         "stats": {
             "mean_cost": avg_cost,
