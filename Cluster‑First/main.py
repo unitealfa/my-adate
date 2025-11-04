@@ -660,11 +660,16 @@ def show_routes_plot(inst: Instance, routes: List[List[int]], veh_types: List[in
         borderaxespad=0.6,
         fontsize=8,
     )
+    layout_supports_button = True
+
     def _apply_layout(_event=None):  # pragma: no cover - interaction graphique
-        try:
-            fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
-        except Exception:
-            pass
+        if layout_supports_button:
+            try:
+                fig.tight_layout(rect=[0.0, 0.0, 0.78, 1.0])
+            except Exception:
+                pass
+        else:
+            fig.subplots_adjust(right=0.78)
 
     _apply_layout()
     fig.canvas.mpl_connect("resize_event", _apply_layout)
@@ -745,7 +750,12 @@ def show_routes_plot(inst: Instance, routes: List[List[int]], veh_types: List[in
         return [m for _, m in mover_artists]
 
     button_ax = fig.add_axes([0.72, 0.02, 0.25, 0.07])
+    try:  # pragma: no cover - dépend des versions de Matplotlib
+        button_ax.set_in_layout(False)
+    except AttributeError:
+        layout_supports_button = False
     launch_button = Button(button_ax, "Lancer une animation", color="#e0e0e0", hovercolor="#d0d0d0")
+    _apply_layout()
 
     def on_click(_event):  # pragma: no cover - interaction utilisateur
         if max_total_frames == 0:
