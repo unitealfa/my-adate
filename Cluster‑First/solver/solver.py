@@ -7,6 +7,21 @@ from .sweep import sweep_build
 from .tabu import TabuSearch
 from .evaluator import solution_cost, eval_route
 
+def _prune_empty_routes(
+    routes: List[List[int]],
+    veh_types: List[int],
+) -> tuple[List[List[int]], List[int]]:
+    """Remove empty tours while keeping the vehicle mapping aligned."""
+
+    filtered_routes: List[List[int]] = []
+    filtered_types: List[int] = []
+    for route, v_type in zip(routes, veh_types):
+        if route:
+            filtered_routes.append(route)
+            filtered_types.append(v_type)
+    return filtered_routes, filtered_types
+
+
 def _route_cost_if_feasible(inst: Instance, route: List[int], veh_type: int) -> tuple[float, bool]:
     """Helper retournant (cost, feasible) pour une route donnée."""
     eval_res = eval_route(inst, route, veh_type)
