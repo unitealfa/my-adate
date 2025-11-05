@@ -8,6 +8,7 @@ This project addresses the Vehicle Routing Problem (VRP) as part of the ADEME in
 
 - Formal mathematical modeling of the VRP
 - Graph-based visualization of delivery networks using NetworkX and Matplotlib
+- Interactive Matplotlib dashboard (`python -m gtms_cert.visualize`) to visualise test results and animate live truck routes
 - Complexity analysis and references to foundational literature
 - Jupyter notebooks for interactive exploration and demonstration
 
