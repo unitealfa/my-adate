@@ -2,8 +2,9 @@
 setlocal EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
+set "PROJECT_ROOT=%SCRIPT_DIR%.."
 set "EXIT_CODE=0"
-pushd "%SCRIPT_DIR%" >nul
+pushd "%PROJECT_ROOT%" >nul
 
 echo ================================================
 echo   Lancement du solveur GTMS-Cert (jeu de test 200 clients)
@@ -31,7 +32,7 @@ if !TRUCKS! LEQ 0 (
     goto END
 )
 
-python -m gtms_cert.run_with_custom_trucks --trucks !TRUCKS! --lb-iters 0 --output "%SCRIPT_DIR%tests\solution_200_clients.json"
+python -m gtms_cert.run_with_custom_trucks --trucks !TRUCKS! --lb-iters 0 --output "%SCRIPT_DIR%tests\solution_200_clients.json"␊
 if errorlevel 1 (
     echo Echec de l'execution du solveur.
     set "EXIT_CODE=1"
