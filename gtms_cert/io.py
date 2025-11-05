@@ -56,13 +56,13 @@ def write_output(
     lb: float,
     gap: float,
     longest_route_idx: int,
-) -> None:
-    """Serialise the solution to JSON."""
+) -> Dict[str, object]:
+    """Serialise the solution to JSON and return the payload."""
     details = []
     for vehicle, seq in enumerate(routes, start=1):
         time_min = oracle.route_time(seq)
         details.append({"vehicle": vehicle, "sequence": list(seq), "time_min": time_min})
-    payload = {
+    payload: Dict[str, object] = {
         "makespan": ub,
         "best_upper_bound": ub,
         "best_lower_bound": lb,
@@ -71,3 +71,4 @@ def write_output(
         "longest_route_vehicle": longest_route_idx + 1,
     }
     Path(path).write_text(json.dumps(payload, indent=2))
+    return payload

@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from .improve import improve_makespan
 from .io import ProblemData, read_input, write_output
@@ -20,7 +20,7 @@ def solve_gtms_cert(
     seed: int = 42,
     cands: int = 32,
     lb_iters: int = 200,
-) -> None:
+) -> Dict[str, object]:
     """Solve the mTSP instance using the GTMS-Cert pipeline."""
     configure_logging()
     set_seed(seed)
@@ -49,7 +49,7 @@ def solve_gtms_cert(
         gap = (ub - lb) / ub if ub > 0 else 0.0
         log_progress(ub, lb, gap)
     longest_route_idx = max(range(len(routes)), key=lambda idx: oracle.route_time(routes[idx]))
-    write_output(output_json_path, routes, oracle, ub, lb, gap, longest_route_idx)
+    return write_output(output_json_path, routes, oracle, ub, lb, gap, longest_route_idx)
 
 
 def _parts_to_routes(parts: List[tuple[int, int]], tour: List[str], depot: str) -> List[List[str]]:

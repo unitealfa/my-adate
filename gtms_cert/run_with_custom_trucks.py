@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     temp_input = _prepare_instance(template, args.trucks)
 
     try:
-        solve_gtms_cert(
+        result = solve_gtms_cert(
             str(temp_input),
             str(args.output),
             seed=args.seed,
@@ -101,7 +101,9 @@ def main(argv: list[str] | None = None) -> int:
             temp_input.unlink()
         except FileNotFoundError:
             pass
-    print(f"Résultat écrit dans {args.output}")
+    print("Résultat du solveur :")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(f"Résultat également enregistré dans {args.output}")
     return 0
 
 
