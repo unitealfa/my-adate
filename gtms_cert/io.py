@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 from .geo import DistanceOracle, build_distance_oracle
 
@@ -48,8 +49,7 @@ def read_input(path: str | Path, cands: int = 32) -> ProblemData:
     return ProblemData(depot_id=depot, vehicle_count=k, use_all=use_all, clients=clients, oracle=oracle)
 
 
-def write_output(
-    path: str | Path,
+def build_output_payload(
     routes: Sequence[Sequence[str]],
     oracle: DistanceOracle,
     ub: float,
@@ -57,7 +57,7 @@ def write_output(
     gap: float,
     longest_route_idx: int,
 ) -> Dict[str, object]:
-    """Serialise the solution to JSON and return the payload."""
+    """Create a serialisable dictionary describing the solution."""
     details = []
     for vehicle, seq in enumerate(routes, start=1):
         time_min = oracle.route_time(seq)
@@ -70,5 +70,67 @@ def write_output(
         "routes": details,
         "longest_route_vehicle": longest_route_idx + 1,
     }
+    return payload
+
+
+def write_output(
+    path: str | Path,
+    routes: Sequence[Sequence[str]],
+    oracle: DistanceOracle,
+    ub: float,
+    lb: float,
+    gap: float,
+    longest_route_idx: int,
+) -> Dict[str, object]:
+    """Serialise the solution to JSON and return the payload."""
+    payload = build_output_payload(routes, oracle, ub, lb, gap, longest_route_idx)
     Path(path).write_text(json.dumps(payload, indent=2))
     return payload
+
+
+def generate_random_problem(
+    vehicle_count: int,
+    client_count: int,
+    seed: int,
+    *,
+    cands: int = 32,
+) -> ProblemData:
+    """Generate a random mTSP instance compatible with the solver pipeline."""
+    if vehicle_count <= 0:
+        raise ValueError("vehicle_count must be strictly positive")
+    if client_count < vehicle_count:
+        raise ValueError("client_count must be >= vehicle_count")
+
+    rng = random.Random(seed)
+    depot_id = "D0"
+    base_lat, base_lon = 48.8566, 2.3522  # Around Paris to keep coordinates realistic
+    spread = 0.25  # Approx ~25km in each direction
+
+    def _random_coord() -> tuple[float, float]:
+        return (
+            base_lat + rng.uniform(-spread, spread),
+            base_lon + rng.uniform(-spread, spread),
+        )
+
+    depot_coord = _random_coord()
+    customers = [
+        {"id": f"C{i+1}", "coord": _random_coord()}
+        for i in range(client_count)
+    ]
+
+    payload = {
+        "depot": {"id": depot_id, "coord": depot_coord},
+        "customers": customers,
+        "vehicles": {"k": vehicle_count, "use_all": True},
+        "metric": {"type": "haversine", "avg_speed_kmh": 40.0},
+        "symmetric": True,
+    }
+    oracle = build_distance_oracle(payload, cands=cands)
+    clients = [customer["id"] for customer in customers]
+    return ProblemData(
+        depot_id=depot_id,
+        vehicle_count=vehicle_count,
+        use_all=True,
+        clients=clients,
+        oracle=oracle,
+    )
