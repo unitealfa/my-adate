@@ -10,8 +10,7 @@ echo ================================================
 echo   Lancement du solveur GTMS-Cert (instance generee dynamiquement)
 echo ================================================
 
-echo Entrez le nombre de camions disponibles :
-set /p TRUCKS=
+set /p TRUCKS="Entrez le nombre de camions disponibles : "
 
 if "!TRUCKS!"=="" (
     echo Vous devez renseigner un nombre de camions.
@@ -34,8 +33,7 @@ if !TRUCKS! LEQ 0 (
 )
 
 echo.
-echo Entrez le nombre de clients (>= nombre de camions) :
-set /p CLIENTS=
+set /p CLIENTS="Entrez le nombre de clients (>= nombre de camions) : "
 
 if "!CLIENTS!"=="" (
     echo Vous devez renseigner un nombre de clients.
@@ -58,8 +56,7 @@ if !CLIENTS! LSS !TRUCKS! (
 )
 
 set "SEED_DEFAULT=42"
-echo Entrez la graine aleatoire (defaut !SEED_DEFAULT!) :
-set /p SEED=
+set /p SEED="Entrez la graine aleatoire (defaut !SEED_DEFAULT!) : "
 
 if "!SEED!"=="" set "SEED=!SEED_DEFAULT!"
 
