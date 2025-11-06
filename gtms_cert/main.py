@@ -30,6 +30,7 @@ def solve_problem_data(
     stagnation_tolerance: int = 5,
     max_diversifications: int = 3,
     diversification_tolerance: float = 0.05,
+    max_global_reseeds: int = 2,
 ) -> Tuple[List[List[str]], float, float, float, int]:
     """Run the GTMS-Cert pipeline on an in-memory problem description."""
     configure_logging()
@@ -39,7 +40,8 @@ def solve_problem_data(
     if len(data.clients) < data.vehicle_count:
         raise ValueError("Number of clients must be >= number of vehicles")
     oracle = data.oracle
-    tour = build_giant_tour(data.clients, oracle, seed=seed)
+    clients = list(data.clients)
+    tour = build_giant_tour(clients, oracle, seed=seed)
     parts, ub = minimax_split(tour, data.depot_id, oracle, data.vehicle_count)
     routes = _parts_to_routes(parts, tour, data.depot_id)
     routes = improve_makespan(routes, oracle)
@@ -63,6 +65,7 @@ def solve_problem_data(
     previous_ub = ub
     previous_gap = gap
     repeated_gap_steps = 0
+    global_reseeds = 0
     while gap > 0.01 and iterations < max_gap_iterations:
         iterations += 1
         routes = improve_makespan(routes, oracle)
@@ -168,6 +171,48 @@ def solve_problem_data(
                     "Nombre maximal de tentatives de diversification atteint (%d).",
                     max_diversifications,
                 )
+                if gap > 0.01 and global_reseeds < max_global_reseeds:
+                    global_reseeds += 1
+                    logger.info(
+                        "Tentative de réensemencement global %d/%d (gap actuel %.2f%%).",
+                        global_reseeds,
+                        max_global_reseeds,
+                        gap * 100,
+                    )
+                    routes = _global_reseed_solution(
+                        clients,
+                        data.depot_id,
+                        data.vehicle_count,
+                        oracle,
+                        rng,
+                    )
+                    routes = improve_makespan(routes, oracle)
+                    costs = [oracle.route_time(r) for r in routes]
+                    ub = max(costs)
+                    lb_tsp = max(lb_tsp, held_karp_1tree_lb(oracle, iterations=50))
+                    lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
+                    gap = (ub - lb) / ub if ub > 0 else 0.0
+                    log_progress(ub, lb, gap)
+                    diversification_attempts = 0
+                    stagnant_steps = 0
+                    repeated_gap_steps = 0
+                    previous_ub = ub
+                    previous_gap = gap
+                    if gap + 1e-9 < best_gap_seen:
+                        memory.append(([route[:] for route in routes], ub, lb, gap))
+                        best_gap_seen = gap
+                        if len(memory) > 10:
+                            memory.pop(0)
+                        logger.info(
+                            "Nouvelle solution issue du réensemencement (gap %.2f%%).",
+                            gap * 100,
+                        )
+                    continue
+                if gap > 0.01 and global_reseeds >= max_global_reseeds:
+                    logger.info(
+                        "Limite de réensemencements globaux atteinte (%d).",
+                        max_global_reseeds,
+                    )
             previous_ub = ub
             previous_gap = gap
             if improved or diversification_performed or used_memory:
@@ -213,6 +258,23 @@ def _parts_to_routes(parts: List[tuple[int, int]], tour: List[str], depot: str) 
         segment = [depot] + tour[start : end + 1] + [depot]
         routes.append(segment)
     return routes
+
+
+def _global_reseed_solution(
+    clients: Sequence[str],
+    depot: str,
+    vehicle_count: int,
+    oracle: DistanceOracle,
+    rng: random.Random,
+) -> List[List[str]]:
+    """Construct a fresh solution by regenerating a giant tour with randomness."""
+
+    shuffled_clients = list(clients)
+    rng.shuffle(shuffled_clients)
+    reseed = rng.randint(0, 1_000_000_000)
+    new_tour = build_giant_tour(shuffled_clients, oracle, seed=reseed)
+    parts, _ = minimax_split(new_tour, depot, oracle, vehicle_count)
+    return _parts_to_routes(parts, new_tour, depot)
 
 
 def _diversify_routes(
