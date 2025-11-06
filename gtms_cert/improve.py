@@ -7,11 +7,21 @@ from .geo import DistanceOracle
 
 
 def improve_makespan(routes: List[List[str]], oracle: DistanceOracle, max_loops: int = 20) -> List[List[str]]:
-    """Iteratively improve the makespan using relocate, swap and 2-opt*."""
+    """Iteratively improve the makespan using multiple neighbourhood moves.
+
+    In addition to the basic relocate/swap/2-opt* operators we also try an
+    Or-opt style move that relocates short customer chains from the longest
+    route to another vehicle.  This diversification step helps balance the
+    workload between routes and has been observed to significantly reduce the
+    makespan on instances where single-node relocations cannot escape a local
+    optimum.
+    """
     if not routes:
         return routes
     for _ in range(max_loops):
         improved = False
+        if _or_opt(routes, oracle):
+            improved = True
         if _relocate(routes, oracle):
             improved = True
         if _swap(routes, oracle):
@@ -69,6 +79,44 @@ def _relocate(routes: List[List[str]], oracle: DistanceOracle) -> bool:
                     routes[longest_idx] = candidate_longest
                     routes[ridx] = candidate_route
                     return True
+    return False
+
+
+def _or_opt(
+    routes: List[List[str]],
+    oracle: DistanceOracle,
+    segment_lengths: Sequence[int] = (2, 3),
+) -> bool:
+    """Move a chain of consecutive customers from the longest route to another route."""
+    if not routes:
+        return False
+    current_makespan, longest_idx = _makespan(routes, oracle)
+    longest_route = routes[longest_idx]
+    for seg_len in segment_lengths:
+        # Each route stores depot at both ends, so ensure enough room after removal.
+        if len(longest_route) <= seg_len + 2:
+            continue
+        for start in range(1, len(longest_route) - seg_len):
+            end = start + seg_len
+            segment = longest_route[start:end]
+            new_longest = longest_route[:start] + longest_route[end:]
+            if len(new_longest) < 3:
+                continue
+            for ridx, route in enumerate(routes):
+                if ridx == longest_idx:
+                    continue
+                for insert_pos in range(1, len(route)):
+                    candidate_route = route[:insert_pos] + list(segment) + route[insert_pos:]
+                    if len(candidate_route) < 3:
+                        continue
+                    new_routes = [list(r) for r in routes]
+                    new_routes[longest_idx] = list(new_longest)
+                    new_routes[ridx] = candidate_route
+                    ms, _ = _makespan(new_routes, oracle)
+                    if ms + 1e-6 < current_makespan:
+                        routes[longest_idx] = list(new_longest)
+                        routes[ridx] = candidate_route
+                        return True
     return False
 
 
