@@ -86,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Afficher immédiatement la visualisation du graphe de tournées",
     )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Ne pas conserver le fichier de sortie JSON (utilise un fichier temporaire)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -95,10 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     template = _load_template(args.template)
     temp_input = _prepare_instance(template, args.trucks)
 
+    if args.no_save:
+        temp_output_file = tempfile.NamedTemporaryFile(
+            "w", suffix="_gtms_cert_output.json", delete=False
+        )
+        temp_output_file.close()
+        output_path = Path(temp_output_file.name)
+    else:
+        output_path = args.output
+
     try:
         result = solve_gtms_cert(
             str(temp_input),
-            str(args.output),
+            str(output_path),
             seed=args.seed,
             cands=args.cands,
             lb_iters=args.lb_iters,
@@ -121,9 +135,17 @@ def main(argv: list[str] | None = None) -> int:
             temp_input.unlink()
         except FileNotFoundError:
             pass
-    print("Résultat du solveur :")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-    print(f"Résultat également enregistré dans {args.output}")
+    if args.no_save:
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+        print("Résultat du solveur (non sauvegardé) :")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print("Résultat du solveur :")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"Résultat également enregistré dans {args.output}")
     return 0
 
 
