@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from typing import Any, Dict, List, Sequence, Tuple, cast
 
 from .improve import improve_makespan
@@ -23,6 +24,8 @@ def solve_problem_data(
     *,
     seed: int = 42,
     lb_iters: int = 200,
+    max_gap_iterations: int = 100,
+    stagnation_tolerance: int = 5,
 ) -> Tuple[List[List[str]], float, float, float, int]:
     """Run the GTMS-Cert pipeline on an in-memory problem description."""
     configure_logging()
@@ -42,7 +45,11 @@ def solve_problem_data(
     lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
     gap = (ub - lb) / ub if ub > 0 else 0.0
     log_progress(ub, lb, gap)
-    while gap > 0.01:
+    iterations = 0
+    stagnant_steps = 0
+    previous_ub = ub
+    while gap > 0.01 and iterations < max_gap_iterations:
+        iterations += 1
         routes = improve_makespan(routes, oracle)
         costs = [oracle.route_time(r) for r in routes]
         ub = max(costs)
@@ -50,6 +57,23 @@ def solve_problem_data(
         lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
         gap = (ub - lb) / ub if ub > 0 else 0.0
         log_progress(ub, lb, gap)
+        if abs(ub - previous_ub) < 1e-6:
+            stagnant_steps += 1
+        else:
+            stagnant_steps = 0
+        previous_ub = ub
+        if stagnant_steps >= stagnation_tolerance:
+            logging.getLogger("gtms_cert").info(
+                "Arrêt de l'amélioration : aucune réduction du makespan après %d itérations.",
+                stagnant_steps,
+            )
+            break
+    if iterations >= max_gap_iterations and gap > 0.01:
+        logging.getLogger("gtms_cert").info(
+            "Arrêt de l'amélioration après %d itérations (gap final %.2f%%).",
+            iterations,
+            gap * 100,
+        )
     longest_route_idx = max(range(len(routes)), key=lambda idx: oracle.route_time(routes[idx]))
     return routes, ub, lb, gap, longest_route_idx
 
@@ -109,31 +133,47 @@ def _prompt_int(
         return value
 
 
-def _print_solution_summary(seed: int, data: ProblemData, payload: Dict[str, object]) -> None:
+def print_solution_summary(seed: int, data: ProblemData, payload: Dict[str, object]) -> None:
     """Display the optimisation result in a human-friendly format."""
-    print("\n=== Instance générée ===")
-    print(f"Seed utilisée : {seed}")
-    print(f"Nombre de camions : {data.vehicle_count}")
-    print(f"Nombre de clients : {len(data.clients)}")
+    vehicle_count = data.vehicle_count
+    client_count = len(data.clients)
+    gap_percent = float(payload.get("gap", 0.0)) * 100
+    lower_bound = float(payload.get("best_lower_bound", 0.0))
+    makespan = float(payload.get("makespan", 0.0))
 
-    print("\n=== Résultat de l'optimisation ===")
+    print("\n=== Paramètres de l'instance ===")
+    print(f"Seed utilisée : {seed}")
+    print(f"Nombre de camions : {vehicle_count}")
+    print(f"Nombre de clients : {client_count}")
+
+    print("\n=== Détails des tournées ===")
     routes = cast(Sequence[Dict[str, Any]], payload.get("routes", []))
+    route_durations: List[tuple[int, float]] = []
     for route in routes:
-        vehicle = route.get("vehicle")
+        vehicle = int(route.get("vehicle", 0))
         sequence = cast(Sequence[str], route.get("sequence", []))
         time_min = float(route.get("time_min", 0.0))
         sequence_str = " -> ".join(sequence)
         print(f"Camion {vehicle}: {sequence_str} | Durée : {time_min:.2f} minutes")
+        route_durations.append((vehicle, time_min))
 
-    makespan = float(payload.get("makespan", 0.0))
     longest_vehicle = payload.get("longest_route_vehicle")
-    lower_bound = float(payload.get("best_lower_bound", 0.0))
-    gap_percent = float(payload.get("gap", 0.0)) * 100
-    print(
-        f"\nDurée maximale de tournée : {makespan:.2f} minutes (Camion {longest_vehicle})"
-    )
+    longest_time = makespan
+    if route_durations:
+        vehicle_longest, duration_longest = max(route_durations, key=lambda item: item[1])
+        longest_time = duration_longest
+        if longest_vehicle in (None, 0):
+            longest_vehicle = vehicle_longest
+
+    print("\n=== Synthèse finale ===")
+    print(f"Gap final : {gap_percent:.2f}%")
     print(f"Borne inférieure : {lower_bound:.2f} minutes")
-    print(f"Écart relatif : {gap_percent:.2f}%")
+    print(
+        f"Temps complet du dernier camion : {longest_time:.2f} minutes",
+    )
+    print(
+        f"Tournée la plus longue : Camion {longest_vehicle} ({longest_time:.2f} minutes)",
+    )
 
 
 def main() -> None:
@@ -166,11 +206,18 @@ def main() -> None:
         )
         return
 
-    trucks = _prompt_int("Nombre de camions disponibles", minimum=1)
+    default_trucks = 5
+    trucks = _prompt_int(
+        "Nombre de camions disponibles",
+        minimum=1,
+        default=default_trucks,
+        message_suffix=" (obligatoire — Entrée pour valeur par défaut)",
+    )
     clients = _prompt_int(
         "Nombre de clients",
         minimum=trucks,
-        message_suffix=" (>= nombre de camions)",
+        default=max(trucks, 20),
+        message_suffix=" (>= nombre de camions, obligatoire — Entrée pour valeur par défaut)",
     )
     seed_default = args.seed if args.seed is not None else 42
     interactive_seed = _prompt_int("Seed à utiliser", minimum=0, default=seed_default)
@@ -187,7 +234,7 @@ def main() -> None:
         lb_iters=args.lb_iters,
     )
     payload = build_output_payload(routes, data.oracle, ub, lb, gap, longest_idx)
-    _print_solution_summary(interactive_seed, data, payload)
+    print_solution_summary(interactive_seed, data, payload)
 
     if args.output:
         write_output(args.output, routes, data.oracle, ub, lb, gap, longest_idx)

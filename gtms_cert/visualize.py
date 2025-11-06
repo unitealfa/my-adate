@@ -326,6 +326,8 @@ def launch_visual_app(
     ax.set_aspect("equal", adjustable="datalim")
 
     fps = 30
+    base_interval = 1000 / fps
+    speed_state = {"factor": 1.0}
     idle_tail = 5.0
     frames = int((max_time + idle_tail) * fps) + 1
 
@@ -391,6 +393,30 @@ def launch_visual_app(
 
     anim: FuncAnimation | None = None
 
+    speed_text = fig.text(
+        0.75,
+        0.12,
+        "Vitesse x1.00",
+        ha="left",
+        va="center",
+        fontsize=9,
+        family="monospace",
+        bbox=dict(facecolor="white", alpha=0.8, edgecolor="#333333"),
+    )
+
+    def _apply_speed() -> None:
+        speed_text.set_text(f"Vitesse x{speed_state['factor']:.2f}")
+        if anim is not None:
+            event_source = getattr(anim, "event_source", None)
+            if event_source is not None and speed_state["factor"] > 0:
+                event_source.interval = base_interval / speed_state["factor"]
+        fig.canvas.draw_idle()
+
+    def _adjust_speed(delta: float) -> None:
+        new_factor = max(0.25, min(4.0, speed_state["factor"] + delta))
+        speed_state["factor"] = new_factor
+        _apply_speed()
+
     def start_animation(_event) -> None:
         nonlocal anim
         if anim is not None:
@@ -403,17 +429,34 @@ def launch_visual_app(
             fig,
             update,
             frames=frames,
-            interval=1000 / fps,
+            interval=base_interval,
             repeat=False,
             blit=False,
         )
-        fig.canvas.draw_idle()
+        _apply_speed()
 
     reset_trucks()
 
     button_ax = fig.add_axes([0.75, 0.02, 0.2, 0.06])
     button = Button(button_ax, "Lancer la simulation", color="#4caf50", hovercolor="#66bb6a")
     button.on_clicked(start_animation)
+
+    slow_ax = fig.add_axes([0.52, 0.02, 0.1, 0.06])
+    slow_button = Button(slow_ax, "Ralentir", color="#f9a825", hovercolor="#ffca28")
+
+    fast_ax = fig.add_axes([0.63, 0.02, 0.1, 0.06])
+    fast_button = Button(fast_ax, "Accélérer", color="#1976d2", hovercolor="#42a5f5")
+
+    def _on_slow(_event) -> None:
+        _adjust_speed(-0.25)
+
+    def _on_fast(_event) -> None:
+        _adjust_speed(0.25)
+
+    slow_button.on_clicked(_on_slow)
+    fast_button.on_clicked(_on_fast)
+
+    _apply_speed()
 
     start_animation(None)
 

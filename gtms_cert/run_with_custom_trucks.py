@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from .io import generate_random_payload, read_input
-from .main import solve_gtms_cert
+from .main import solve_gtms_cert, print_solution_summary
 from .visualize import TestResult, launch_visual_app
 
 
@@ -127,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         output_path = args.output
 
+    data = read_input(temp_input, cands=args.cands)
+
     try:
         result = solve_gtms_cert(
             str(temp_input),
@@ -135,8 +137,8 @@ def main(argv: list[str] | None = None) -> int:
             cands=args.cands,
             lb_iters=args.lb_iters,
         )
+        print_solution_summary(args.seed, data, result)
         if args.show:
-            data = read_input(temp_input, cands=args.cands)
             launch_visual_app(
                 data,
                 result,
