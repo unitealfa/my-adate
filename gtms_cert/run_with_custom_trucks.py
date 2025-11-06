@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .io import read_input
+from .io import generate_random_payload, read_input
 from .main import solve_gtms_cert
 from .visualize import TestResult, launch_visual_app
 
@@ -35,8 +35,12 @@ def _prepare_instance(template: dict, trucks: int) -> Path:
             "Le nombre de camions ne peut pas dépasser le nombre de clients disponibles."
         )
 
+    return _write_temp_payload(template)
+
+
+def _write_temp_payload(payload: dict) -> Path:
     temp_file = tempfile.NamedTemporaryFile("w", suffix="_gtms_cert.json", delete=False)
-    json.dump(template, temp_file, indent=2)
+    json.dump(payload, temp_file, indent=2)
     temp_file.flush()
     temp_file.close()
     return Path(temp_file.name)
@@ -44,18 +48,21 @@ def _prepare_instance(template: dict, trucks: int) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Exécuter GTMS-Cert avec un nombre de camions donné")
-    default_template = Path(__file__).resolve().parent / "tests" / "sample_instance_200_clients.json"
     parser.add_argument(
         "--template",
         type=Path,
-        default=default_template,
-        help="Chemin vers le fichier JSON modèle (200 clients par défaut)",
+        help="Chemin vers le fichier JSON modèle (optionnel)",
     )
     parser.add_argument(
         "--trucks",
         type=int,
         required=True,
         help="Nombre de camions disponibles",
+    )
+    parser.add_argument(
+        "--clients",
+        type=int,
+        help="Nombre de clients à générer (requis sans template)",
     )
     parser.add_argument(
         "--output",
@@ -97,8 +104,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.trucks <= 0:
         raise SystemExit("Le nombre de camions doit être strictement positif.")
 
-    template = _load_template(args.template)
-    temp_input = _prepare_instance(template, args.trucks)
+    temp_input: Path
+    if args.template is not None:
+        template = _load_template(args.template)
+        temp_input = _prepare_instance(template, args.trucks)
+    else:
+        if args.clients is None:
+            parser.error("--clients est requis lorsqu'aucun template n'est fourni")
+        if args.clients < args.trucks:
+            raise SystemExit(
+                "Le nombre de clients doit être supérieur ou égal au nombre de camions."
+            )
+        payload = generate_random_payload(args.trucks, args.clients, args.seed)
+        temp_input = _write_temp_payload(payload)
 
     if args.no_save:
         temp_output_file = tempfile.NamedTemporaryFile(

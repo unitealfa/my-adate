@@ -7,7 +7,7 @@ set "EXIT_CODE=0"
 pushd "%PROJECT_ROOT%" >nul
 
 echo ================================================
-echo   Lancement du solveur GTMS-Cert (jeu de test 200 clients)
+echo   Lancement du solveur GTMS-Cert (instance generee dynamiquement)
 echo ================================================
 
 set /p TRUCKS=Entrez le nombre de camions disponibles :
@@ -32,7 +32,42 @@ if !TRUCKS! LEQ 0 (
     goto END
 )
 
-python -m gtms_cert.run_with_custom_trucks --trucks !TRUCKS! --lb-iters 0 --show --no-save
+set /p CLIENTS=Entrez le nombre de clients (>= nombre de camions) :
+
+if "!CLIENTS!"=="" (
+    echo Vous devez renseigner un nombre de clients.
+    set "EXIT_CODE=1"
+    goto END
+)
+
+set "NONNUM="
+for /f "delims=0123456789" %%A in ("!CLIENTS!") do set "NONNUM=%%A"
+if defined NONNUM (
+    echo Merci d'entrer un nombre entier valide pour les clients.
+    set "EXIT_CODE=1"
+    goto END
+)
+
+if !CLIENTS! LSS !TRUCKS! (
+    echo Le nombre de clients doit etre superieur ou egal au nombre de camions.
+    set "EXIT_CODE=1"
+    goto END
+)
+
+set "SEED_DEFAULT=42"
+set /p SEED=Entrez la graine aleatoire (defaut !SEED_DEFAULT!) :
+
+if "!SEED!"=="" set "SEED=!SEED_DEFAULT!"
+
+set "NONNUM="
+for /f "delims=0123456789-" %%A in ("!SEED!") do set "NONNUM=%%A"
+if defined NONNUM (
+    echo Merci d'entrer un nombre entier valide pour la graine aleatoire.
+    set "EXIT_CODE=1"
+    goto END
+)
+
+python -m gtms_cert.run_with_custom_trucks --trucks !TRUCKS! --clients !CLIENTS! --seed !SEED! --lb-iters 0 --show --no-save
 
 if errorlevel 1 (
     echo Echec de l'execution du solveur.

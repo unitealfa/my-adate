@@ -88,14 +88,12 @@ def write_output(
     return payload
 
 
-def generate_random_problem(
+def generate_random_payload(
     vehicle_count: int,
     client_count: int,
     seed: int,
-    *,
-    cands: int = 32,
-) -> ProblemData:
-    """Generate a random mTSP instance compatible with the solver pipeline."""
+) -> Dict[str, object]:
+    """Create a random instance payload matching the solver's expected format."""
     if vehicle_count <= 0:
         raise ValueError("vehicle_count must be strictly positive")
     if client_count < vehicle_count:
@@ -118,15 +116,27 @@ def generate_random_problem(
         for i in range(client_count)
     ]
 
-    payload = {
+    return {
         "depot": {"id": depot_id, "coord": depot_coord},
         "customers": customers,
         "vehicles": {"k": vehicle_count, "use_all": True},
         "metric": {"type": "haversine", "avg_speed_kmh": 40.0},
         "symmetric": True,
     }
+
+
+def generate_random_problem(
+    vehicle_count: int,
+    client_count: int,
+    seed: int,
+    *,
+    cands: int = 32,
+) -> ProblemData:
+    """Generate a random mTSP instance compatible with the solver pipeline."""
+    payload = generate_random_payload(vehicle_count, client_count, seed)
     oracle = build_distance_oracle(payload, cands=cands)
-    clients = [customer["id"] for customer in customers]
+    clients = [customer["id"] for customer in payload["customers"]]
+    depot_id = payload["depot"]["id"]
     return ProblemData(
         depot_id=depot_id,
         vehicle_count=vehicle_count,
