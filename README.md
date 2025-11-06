@@ -40,6 +40,12 @@ This project addresses the Vehicle Routing Problem (VRP) as part of the ADEME in
 
 Open `Livrable_Modélisation.ipynb` in JupyterLab or VS Code and run the cells to visualize and analyze the VRP model.
 
+To run the solver from the command line with a custom number of trucks and immediately display the interactive route graph, use:
+
+```sh
+python -m gtms_cert.run_with_custom_trucks --trucks 10 --show
+```
+
 ## Dependencies
 
 Key packages (see [`requirements.txt`](requirements.txt)):

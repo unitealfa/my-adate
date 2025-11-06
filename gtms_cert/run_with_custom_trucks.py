@@ -7,7 +7,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .io import read_input
 from .main import solve_gtms_cert
+from .visualize import TestResult, launch_visual_app
 
 
 def _load_template(path: Path) -> dict:
@@ -79,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="Itérations pour la borne inférieure (0 pour des tests rapides)",
     )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Afficher immédiatement la visualisation du graphe de tournées",
+    )
 
     args = parser.parse_args(argv)
 
@@ -96,6 +103,19 @@ def main(argv: list[str] | None = None) -> int:
             cands=args.cands,
             lb_iters=args.lb_iters,
         )
+        if args.show:
+            data = read_input(temp_input, cands=args.cands)
+            launch_visual_app(
+                data,
+                result,
+                tests=[
+                    TestResult(
+                        name="Simulation personnalisée",
+                        passed=True,
+                        message="Visualisation directe",
+                    )
+                ],
+            )
     finally:
         try:
             temp_input.unlink()

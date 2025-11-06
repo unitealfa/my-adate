@@ -238,6 +238,8 @@ def run_regression_tests(cands: int) -> tuple[List[TestResult], ProblemData, dic
 
 
 def _format_test_summary(tests: Sequence[TestResult]) -> str:
+    if not tests:
+        return ""
     lines = ["Résultats des tests :"]
     for test in tests:
         status = "✅" if test.passed else "❌"
@@ -245,14 +247,16 @@ def _format_test_summary(tests: Sequence[TestResult]) -> str:
     return "\n".join(lines)
 
 
-def _launch_visual_app(
+def launch_visual_app(
     data: ProblemData,
     result: dict,
-    tests: Sequence[TestResult],
+    tests: Sequence[TestResult] | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
     from matplotlib.widgets import Button
+
+    tests = list(tests) if tests is not None else []
 
     positions = compute_node_positions(data.oracle)
     timelines = build_route_timelines([route["sequence"] for route in result["routes"]], data.oracle)
@@ -301,16 +305,17 @@ def _launch_visual_app(
     )
 
     summary = _format_test_summary(tests)
-    fig.text(
-        0.02,
-        0.65,
-        summary,
-        ha="left",
-        va="top",
-        fontsize=9,
-        family="monospace",
-        bbox=dict(facecolor="white", alpha=0.8, edgecolor="#333333"),
-    )
+    if summary:
+        fig.text(
+            0.02,
+            0.65,
+            summary,
+            ha="left",
+            va="top",
+            fontsize=9,
+            family="monospace",
+            bbox=dict(facecolor="white", alpha=0.8, edgecolor="#333333"),
+        )
 
     timer_text = ax.text(0.02, 0.02, "Temps écoulé : 0.0 min", transform=ax.transAxes)
 
@@ -398,7 +403,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         tests, data, result = run_regression_tests(args.cands)
 
-    _launch_visual_app(data, result, tests)
+    launch_visual_app(data, result, tests)
     return 0
 
 
