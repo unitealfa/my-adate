@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 from .geo import DistanceOracle, build_distance_oracle
 
@@ -19,6 +19,7 @@ class ProblemData:
     use_all: bool
     clients: List[str]
     oracle: DistanceOracle
+    time_windows: Dict[str, Tuple[float, float]] = field(default_factory=dict)
 
 
 def read_input(path: str | Path, cands: int = 32) -> ProblemData:
@@ -46,7 +47,15 @@ def read_input(path: str | Path, cands: int = 32) -> ProblemData:
         raise ValueError("Number of clients must be >= number of vehicles when use_all is true")
 
     oracle = build_distance_oracle(payload, cands=cands)
-    return ProblemData(depot_id=depot, vehicle_count=k, use_all=use_all, clients=clients, oracle=oracle)
+    time_windows = dict(getattr(oracle, "time_windows", {}))
+    return ProblemData(
+        depot_id=depot,
+        vehicle_count=k,
+        use_all=use_all,
+        clients=clients,
+        oracle=oracle,
+        time_windows=time_windows,
+    )
 
 
 def build_output_payload(
@@ -93,7 +102,11 @@ def generate_random_payload(
     client_count: int,
     seed: int,
 ) -> Dict[str, object]:
-    """Create a random instance payload matching the solver's expected format."""
+    """Create a random instance payload matching the solver's expected format.
+
+    Each generated customer receives a realistic delivery time window in minutes
+    from the start of the planning horizon.
+    """
     if vehicle_count <= 0:
         raise ValueError("vehicle_count must be strictly positive")
     if client_count < vehicle_count:
@@ -111,10 +124,22 @@ def generate_random_payload(
         )
 
     depot_coord = _random_coord()
-    customers = [
-        {"id": f"C{i+1}", "coord": _random_coord()}
-        for i in range(client_count)
-    ]
+    day_start = 8 * 60  # 08:00 in minutes
+    day_end = 19 * 60  # 19:00 in minutes
+    min_window = 90
+    max_window = 180
+
+    customers = []
+    for i in range(client_count):
+        window_start = rng.uniform(day_start, max(day_start, day_end - min_window))
+        window_length = rng.uniform(min_window, max_window)
+        window_end = min(window_start + window_length, day_end)
+        customer_payload = {
+            "id": f"C{i+1}",
+            "coord": _random_coord(),
+            "time_window": [round(window_start, 2), round(window_end, 2)],
+        }
+        customers.append(customer_payload)
 
     return {
         "depot": {"id": depot_id, "coord": depot_coord},
@@ -136,6 +161,7 @@ def generate_random_problem(
     payload = generate_random_payload(vehicle_count, client_count, seed)
     oracle = build_distance_oracle(payload, cands=cands)
     clients = [customer["id"] for customer in payload["customers"]]
+    time_windows = dict(getattr(oracle, "time_windows", {}))
     depot_id = payload["depot"]["id"]
     return ProblemData(
         depot_id=depot_id,
@@ -143,4 +169,5 @@ def generate_random_problem(
         use_all=True,
         clients=clients,
         oracle=oracle,
+        time_windows=time_windows,
     )

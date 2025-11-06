@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Sequence, Tuple
 
 try:  # Optional dependency
     import numpy as np  # type: ignore
@@ -38,6 +38,8 @@ class DistanceOracle:
     matrix: Any | None
     symmetric: bool
     candidate_edges: Dict[str, List[tuple[str, float]]]
+    time_windows: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    lateness_penalty_multiplier: float = 60.0
 
     def __post_init__(self) -> None:
         self._index: Dict[str, int] = {node: idx for idx, node in enumerate(self.node_ids)}
@@ -82,10 +84,29 @@ class DistanceOracle:
                     self.candidate_edges.setdefault(v, []).append((u, cost))
 
     def route_time(self, sequence: Sequence[str]) -> float:
-        total = 0.0
-        for i in range(len(sequence) - 1):
-            total += self.get(sequence[i], sequence[i + 1])
-        return total
+        total_time = 0.0
+        if not sequence:
+            return total_time
+
+        current_time = 0.0
+        for start, end in zip(sequence[:-1], sequence[1:]):
+            travel_time = self.get(start, end)
+            current_time += travel_time
+
+            if self.time_windows and end != self.depot_id:
+                window = self.time_windows.get(end)
+                if window:
+                    window_start, window_end = window
+                    if current_time < window_start:
+                        wait_time = window_start - current_time
+                        current_time += wait_time
+                    elif current_time > window_end:
+                        lateness = current_time - window_end
+                        current_time += lateness * self.lateness_penalty_multiplier
+
+            total_time = current_time
+
+        return total_time
 
 
 class DistanceRow(Mapping[str, float]):
@@ -105,9 +126,48 @@ class DistanceRow(Mapping[str, float]):
         return len(self.oracle.node_ids)
 
 
+def _extract_time_windows(payload: Mapping[str, object]) -> Dict[str, Tuple[float, float]]:
+    """Return node-specific time windows in minutes."""
+
+    time_windows: Dict[str, Tuple[float, float]] = {}
+
+    raw_mapping = payload.get("time_windows")
+    if isinstance(raw_mapping, Mapping):
+        for node_id, window in raw_mapping.items():
+            if isinstance(window, Sequence) and len(window) == 2:
+                try:
+                    start = float(window[0])
+                    end = float(window[1])
+                except (TypeError, ValueError):
+                    continue
+                if end >= start:
+                    time_windows[str(node_id)] = (start, end)
+
+    customers = payload.get("customers")
+    if isinstance(customers, Sequence):
+        for entry in customers:
+            if not isinstance(entry, Mapping):
+                continue
+            node_id = entry.get("id")
+            window = entry.get("time_window")
+            if node_id is None or not isinstance(window, Sequence) or len(window) != 2:
+                continue
+            try:
+                start = float(window[0])
+                end = float(window[1])
+            except (TypeError, ValueError):
+                continue
+            if end >= start:
+                time_windows[str(node_id)] = (start, end)
+
+    return time_windows
+
+
 def build_distance_oracle(payload: Mapping[str, object], cands: int = 32) -> DistanceOracle:
     """Create a distance oracle from the JSON payload."""
     symmetric = bool(payload.get("symmetric", True))
+    time_windows = _extract_time_windows(payload)
+
     if "time_matrix_min" in payload:
         raw_matrix = payload["time_matrix_min"]
         if np is not None:
@@ -141,6 +201,7 @@ def build_distance_oracle(payload: Mapping[str, object], cands: int = 32) -> Dis
         matrix=matrix,
         symmetric=symmetric,
         candidate_edges=defaultdict(list),
+        time_windows=time_windows,
     )
     _populate_candidates(oracle, cands=cands)
     oracle.ensure_symmetric_candidates()
