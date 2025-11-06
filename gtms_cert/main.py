@@ -45,9 +45,18 @@ def solve_problem_data(
     lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
     gap = (ub - lb) / ub if ub > 0 else 0.0
     log_progress(ub, lb, gap)
+    memory: List[Tuple[List[List[str]], float, float, float]] = []
+    best_gap_seen = float("inf")
+    logger = logging.getLogger("gtms_cert")
+    if gap < best_gap_seen:
+        memory.append(([route[:] for route in routes], ub, lb, gap))
+        best_gap_seen = gap
+        logger.info("État initial ajouté en mémoire (gap %.2f%%).", gap * 100)
     iterations = 0
     stagnant_steps = 0
     previous_ub = ub
+    previous_gap = gap
+    repeated_gap_steps = 0
     while gap > 0.01 and iterations < max_gap_iterations:
         iterations += 1
         routes = improve_makespan(routes, oracle)
@@ -57,13 +66,55 @@ def solve_problem_data(
         lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
         gap = (ub - lb) / ub if ub > 0 else 0.0
         log_progress(ub, lb, gap)
+        if gap + 1e-9 < best_gap_seen:
+            memory.append(([route[:] for route in routes], ub, lb, gap))
+            best_gap_seen = gap
+            if len(memory) > 10:
+                memory.pop(0)
+            logger.info("Nouvel état stocké en mémoire (gap %.2f%%).", gap * 100)
         if abs(ub - previous_ub) < 1e-6:
             stagnant_steps += 1
         else:
             stagnant_steps = 0
         previous_ub = ub
+        if abs(gap - previous_gap) < 1e-6:
+            repeated_gap_steps += 1
+        else:
+            repeated_gap_steps = 0
+        previous_gap = gap
+        if repeated_gap_steps >= 5 and memory:
+            best_routes, best_ub, best_lb, best_gap = min(memory, key=lambda entry: entry[3])
+            routes = [route[:] for route in best_routes]
+            ub = best_ub
+            lb = best_lb
+            gap = best_gap
+            logger.info(
+                "Gap stagnant détecté : utilisation de la mémoire (gap %.2f%%) pour relancer l'optimisation.",
+                gap * 100,
+            )
+            routes = improve_makespan(routes, oracle)
+            costs = [oracle.route_time(r) for r in routes]
+            ub = max(costs)
+            lb_tsp = max(lb_tsp, held_karp_1tree_lb(oracle, iterations=50))
+            lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
+            gap = (ub - lb) / ub if ub > 0 else 0.0
+            log_progress(ub, lb, gap)
+            if gap + 1e-9 < best_gap_seen:
+                memory.append(([route[:] for route in routes], ub, lb, gap))
+                best_gap_seen = gap
+                if len(memory) > 10:
+                    memory.pop(0)
+                logger.info(
+                    "État optimisé depuis la mémoire ajouté (gap %.2f%%).",
+                    gap * 100,
+                )
+            repeated_gap_steps = 0
+            stagnant_steps = 0
+            previous_ub = ub
+            previous_gap = gap
+            continue
         if stagnant_steps >= stagnation_tolerance:
-            logging.getLogger("gtms_cert").info(
+            logger.info(
                 "Arrêt de l'amélioration : aucune réduction du makespan après %d itérations.",
                 stagnant_steps,
             )
