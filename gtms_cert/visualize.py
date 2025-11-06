@@ -78,12 +78,11 @@ def build_route_timelines(
         if seq and seq[0] != seq[-1]:
             seq.append(seq[0])
         segments: List[RouteSegment] = []
-        total = 0.0
         for start, end in zip(seq[:-1], seq[1:]):
             travel = float(oracle.get(start, end))
             segments.append(RouteSegment(start=start, end=end, travel_time=travel))
-            total += travel
-        timelines.append(RouteTimeline(route=seq, segments=segments, total_time=total))
+        total_time = oracle.route_time(seq)
+        timelines.append(RouteTimeline(route=seq, segments=segments, total_time=total_time))
     return timelines
 
 

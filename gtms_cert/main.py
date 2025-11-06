@@ -464,11 +464,25 @@ def main() -> None:
     seed_default = args.seed if args.seed is not None else 42
     interactive_seed = _prompt_int("Seed à utiliser", minimum=0, default=seed_default)
 
+    time_window_choice = None
+    while time_window_choice not in (1, 2):
+        time_window_choice = _prompt_int(
+            "Souhaitez-vous utiliser les fenêtres de temps?",
+            minimum=1,
+            default=1,
+            message_suffix=" (1 = avec fenêtres de temps, 2 = sans)",
+        )
+        if time_window_choice not in (1, 2):
+            print("Veuillez répondre par 1 (avec) ou 2 (sans fenêtres de temps).")
+
+    include_time_windows = time_window_choice == 1
+
     data = generate_random_problem(
         trucks,
         clients,
         interactive_seed,
         cands=args.cands,
+        include_time_windows=include_time_windows,
     )
     routes, ub, lb, gap, longest_idx = solve_problem_data(
         data,
