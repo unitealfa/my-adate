@@ -327,9 +327,10 @@ def launch_visual_app(
 
     fps = 30
     base_interval = 1000 / fps
+    time_step = 1.0 / fps
     speed_state = {"factor": 1.0}
+    simulation_state = {"time": 0.0}
     idle_tail = 5.0
-    frames = int((max_time + idle_tail) * fps) + 1
 
     def interpolate_position(timeline: RouteTimeline, t: float) -> Coordinate:
         if not timeline.segments:
@@ -371,13 +372,22 @@ def launch_visual_app(
         return path
 
     def reset_trucks() -> None:
+        simulation_state["time"] = 0.0
         for timeline, _color, point, trail in trucks_artists:
             start_x, start_y = positions[timeline.route[0]]
             point.set_data([start_x], [start_y])
             trail.set_data([start_x], [start_y])
+        timer_text.set_text("Temps écoulé : 0.0 min")
 
     def update(frame_idx: int):
-        current_time = frame_idx / fps
+        if speed_state["factor"] <= 0:
+            delta = 0.0
+        else:
+            delta = time_step * speed_state["factor"]
+        simulation_state["time"] = min(
+            simulation_state["time"] + delta, max_time + idle_tail
+        )
+        current_time = simulation_state["time"]
         display_time = min(current_time, max_time)
         artists = []
         for timeline, _color, point, trail in trucks_artists:
@@ -389,6 +399,10 @@ def launch_visual_app(
             trail.set_data(xs, ys)
             artists.extend([point, trail])
         timer_text.set_text(f"Temps écoulé : {display_time:.1f} min")
+        if current_time >= max_time + idle_tail - 1e-9 and anim is not None:
+            event_source = getattr(anim, "event_source", None)
+            if event_source is not None:
+                event_source.stop()
         return artists + [timer_text]
 
     anim: FuncAnimation | None = None
@@ -406,10 +420,9 @@ def launch_visual_app(
 
     def _apply_speed() -> None:
         speed_text.set_text(f"Vitesse x{speed_state['factor']:.2f}")
-        if anim is not None:
-            event_source = getattr(anim, "event_source", None)
-            if event_source is not None and speed_state["factor"] > 0:
-                event_source.interval = base_interval / speed_state["factor"]
+        event_source = getattr(anim, "event_source", None) if anim is not None else None
+        if event_source is not None:
+            event_source.interval = base_interval
         fig.canvas.draw_idle()
 
     def _adjust_speed(delta: float) -> None:
@@ -428,11 +441,11 @@ def launch_visual_app(
         anim = FuncAnimation(
             fig,
             update,
-            frames=frames,
             interval=base_interval,
             repeat=False,
             blit=False,
         )
+        setattr(fig, "_gtms_animation", anim)
         _apply_speed()
 
     reset_trucks()

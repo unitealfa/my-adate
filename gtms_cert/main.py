@@ -450,13 +450,13 @@ def main() -> None:
 
     default_trucks = 5
     trucks = _prompt_int(
-        "Nombre de camions disponibles",
+        "Saisir le nombre de camions disponibles",
         minimum=1,
         default=default_trucks,
         message_suffix=" (obligatoire — Entrée pour valeur par défaut)",
     )
     clients = _prompt_int(
-        "Nombre de clients",
+        "Saisir le nombre de clients",
         minimum=trucks,
         default=max(trucks, 20),
         message_suffix=" (>= nombre de camions, obligatoire — Entrée pour valeur par défaut)",
