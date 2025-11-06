@@ -54,8 +54,8 @@ class ParallelSupervisor:
         solver_cmd: List[str],
         seeds: Iterable[int] = DEFAULT_SEEDS,
         max_procs: int = DEFAULT_MAX_PROCS,
-        trucks: int = DEFAULT_TRUCKS,
-        clients: int = DEFAULT_CLIENTS,
+        trucks: int | None = DEFAULT_TRUCKS,
+        clients: int | None = DEFAULT_CLIENTS,
         extra_args: Iterable[str] | None = None,
         target_gap: float = DEFAULT_TARGET_GAP,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
@@ -76,16 +76,13 @@ class ParallelSupervisor:
         self.best_seed: int | None = None
 
     def build_command(self, seed: int) -> List[str]:
-        return [
-            *self.solver_cmd,
-            "--trucks",
-            str(self.trucks),
-            "--clients",
-            str(self.clients),
-            "--seed",
-            str(seed),
-            *self.extra_args,
-        ]
+        command = [*self.solver_cmd]
+        if self.trucks is not None:
+            command.extend(["--trucks", str(self.trucks)])
+        if self.clients is not None:
+            command.extend(["--clients", str(self.clients)])
+        command.extend(["--seed", str(seed), *self.extra_args])
+        return command
 
     def launch_solver(self, seed: int) -> SolverProcess:
         log_path = self.runs_dir / f"seed_{seed}.log"

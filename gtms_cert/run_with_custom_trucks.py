@@ -9,6 +9,13 @@ from pathlib import Path
 
 from .io import generate_random_payload, read_input
 from .main import solve_gtms_cert, print_solution_summary
+from .parallel_supervisor import (
+    DEFAULT_MAX_PROCS as SUPERVISOR_DEFAULT_MAX_PROCS,
+    DEFAULT_POLL_INTERVAL as SUPERVISOR_DEFAULT_POLL_INTERVAL,
+    DEFAULT_SEEDS as SUPERVISOR_DEFAULT_SEEDS,
+    DEFAULT_TARGET_GAP as SUPERVISOR_DEFAULT_TARGET_GAP,
+    ParallelSupervisor,
+)
 from .visualize import TestResult, launch_visual_app
 
 
@@ -98,23 +105,92 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Ne pas conserver le fichier de sortie JSON (utilise un fichier temporaire)",
     )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Lancer plusieurs exécutions en parallèle avec différentes graines",
+    )
+    parser.add_argument(
+        "--parallel-seeds",
+        nargs="+",
+        type=int,
+        help="Liste de graines à lancer en parallèle (implique --parallel)",
+    )
+    parser.add_argument(
+        "--parallel-max-procs",
+        type=int,
+        help="Nombre maximum d'exécutions simultanées (par défaut hérité du superviseur)",
+    )
+    parser.add_argument(
+        "--parallel-target-gap",
+        type=float,
+        help="Gap cible pour arrêter les exécutions parallèles (%%)",
+    )
+    parser.add_argument(
+        "--parallel-poll-interval",
+        type=int,
+        help="Intervalle en secondes entre les vérifications de journaux",
+    )
+    parser.add_argument(
+        "--parallel-runs-dir",
+        type=Path,
+        help="Répertoire où stocker les journaux des exécutions parallèles",
+    )
 
     args = parser.parse_args(argv)
+
+    run_in_parallel = args.parallel or args.parallel_seeds is not None
+    seeds = list(args.parallel_seeds or SUPERVISOR_DEFAULT_SEEDS) if run_in_parallel else None
+
+    if run_in_parallel:
+        if args.show:
+            raise SystemExit("L'option --show n'est pas compatible avec l'exécution parallèle.")
+        if not args.no_save:
+            raise SystemExit("Utilisez --no-save pour lancer des exécutions parallèles.")
 
     if args.trucks <= 0:
         raise SystemExit("Le nombre de camions doit être strictement positif.")
 
-    temp_input: Path
-    if args.template is not None:
-        template = _load_template(args.template)
-        temp_input = _prepare_instance(template, args.trucks)
-    else:
+    if args.template is None:
         if args.clients is None:
             parser.error("--clients est requis lorsqu'aucun template n'est fourni")
         if args.clients < args.trucks:
             raise SystemExit(
                 "Le nombre de clients doit être supérieur ou égal au nombre de camions."
             )
+
+    if run_in_parallel:
+        solver_cmd = [sys.executable, "-m", "gtms_cert.run_with_custom_trucks"]
+        extra_args: list[str] = ["--trucks", str(args.trucks)]
+        if args.template is not None:
+            extra_args.extend(["--template", str(args.template)])
+        else:
+            extra_args.extend(["--clients", str(args.clients)])
+        if args.cands != parser.get_default("cands"):
+            extra_args.extend(["--cands", str(args.cands)])
+        if args.lb_iters != parser.get_default("lb_iters"):
+            extra_args.extend(["--lb-iters", str(args.lb_iters)])
+        if args.no_save and "--no-save" not in extra_args:
+            extra_args.append("--no-save")
+        supervisor = ParallelSupervisor(
+            solver_cmd=solver_cmd,
+            seeds=seeds,
+            max_procs=args.parallel_max_procs or SUPERVISOR_DEFAULT_MAX_PROCS,
+            trucks=None,
+            clients=None,
+            extra_args=extra_args,
+            target_gap=args.parallel_target_gap or SUPERVISOR_DEFAULT_TARGET_GAP,
+            poll_interval=args.parallel_poll_interval or SUPERVISOR_DEFAULT_POLL_INTERVAL,
+            runs_dir=args.parallel_runs_dir,
+        )
+        supervisor.run()
+        return 0
+
+    temp_input: Path
+    if args.template is not None:
+        template = _load_template(args.template)
+        temp_input = _prepare_instance(template, args.trucks)
+    else:
         payload = generate_random_payload(args.trucks, args.clients, args.seed)
         temp_input = _write_temp_payload(payload)
 
