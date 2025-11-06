@@ -75,6 +75,8 @@ def build_route_timelines(
     timelines: List[RouteTimeline] = []
     for route in routes:
         seq = list(route)
+        if seq and seq[0] != seq[-1]:
+            seq.append(seq[0])
         segments: List[RouteSegment] = []
         total = 0.0
         for start, end in zip(seq[:-1], seq[1:]):
@@ -284,8 +286,9 @@ def launch_visual_app(
         xs = [positions[node][0] for node in timeline.route]
         ys = [positions[node][1] for node in timeline.route]
         ax.plot(xs, ys, color=color, alpha=0.35, linewidth=1.5)
+        trail_line = ax.plot([], [], color=color, linewidth=2.0, alpha=0.8, zorder=6)[0]
         truck_point = ax.plot([], [], marker="s", color=color, markersize=8, zorder=10)[0]
-        trucks_artists.append((timeline, color, truck_point))
+        trucks_artists.append((timeline, color, truck_point, trail_line))
         max_time = max(max_time, timeline.total_time)
 
     stats_text = (
@@ -322,7 +325,7 @@ def launch_visual_app(
     ax.legend(loc="upper right")
     ax.set_aspect("equal", adjustable="datalim")
 
-    fps = 10
+    fps = 30
     frames = int(max_time * fps) + 1
 
     def interpolate_position(timeline: RouteTimeline, t: float) -> Coordinate:
@@ -342,18 +345,55 @@ def launch_visual_app(
             elapsed += segment.travel_time
         return positions[timeline.route[-1]]
 
+    def compute_travel_path(timeline: RouteTimeline, t: float) -> List[Coordinate]:
+        path: List[Coordinate] = [positions[timeline.route[0]]]
+        if not timeline.segments:
+            return path
+        elapsed = 0.0
+        for segment in timeline.segments:
+            start_pos = positions[segment.start]
+            end_pos = positions[segment.end]
+            if t >= elapsed + segment.travel_time - 1e-9:
+                path.append(end_pos)
+                elapsed += segment.travel_time
+                continue
+            if segment.travel_time <= 0:
+                path.append(end_pos)
+            else:
+                ratio = max(0.0, min(1.0, (t - elapsed) / segment.travel_time))
+                x = start_pos[0] + (end_pos[0] - start_pos[0]) * ratio
+                y = start_pos[1] + (end_pos[1] - start_pos[1]) * ratio
+                path.append((x, y))
+            break
+        return path
+
+    def reset_trucks() -> None:
+        for timeline, _color, point, trail in trucks_artists:
+            start_x, start_y = positions[timeline.route[0]]
+            point.set_data([start_x], [start_y])
+            trail.set_data([start_x], [start_y])
+
     def update(frame_idx: int):
         current_time = frame_idx / fps
-        for timeline, _color, point in trucks_artists:
+        artists = []
+        for timeline, _color, point, trail in trucks_artists:
             x, y = interpolate_position(timeline, current_time)
             point.set_data([x], [y])
+            path = compute_travel_path(timeline, current_time)
+            xs = [coord[0] for coord in path]
+            ys = [coord[1] for coord in path]
+            trail.set_data(xs, ys)
+            artists.extend([point, trail])
         timer_text.set_text(f"Temps écoulé : {current_time:.1f} min")
-        return [artist for _timeline, _color, artist in trucks_artists] + [timer_text]
+        return artists + [timer_text]
 
     anim: FuncAnimation | None = None
 
     def start_animation(_event) -> None:
         nonlocal anim
+        if anim is not None:
+            anim.event_source.stop()
+        reset_trucks()
         anim = FuncAnimation(
             fig,
             update,
@@ -363,6 +403,8 @@ def launch_visual_app(
             blit=False,
         )
         fig.canvas.draw_idle()
+
+    reset_trucks()
 
     button_ax = fig.add_axes([0.75, 0.02, 0.2, 0.06])
     button = Button(button_ax, "Lancer la simulation", color="#4caf50", hovercolor="#66bb6a")
