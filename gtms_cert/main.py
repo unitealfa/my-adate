@@ -50,6 +50,23 @@ def solve_problem_data(
     lb_tsp = held_karp_1tree_lb(oracle, iterations=lb_iters)
     lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
     gap = (ub - lb) / ub if ub > 0 else 0.0
+
+    best_routes = [route[:] for route in routes]
+    best_ub = ub
+    best_lb = lb
+    best_gap = gap
+
+    def update_best(current_routes: List[List[str]], current_ub: float, current_lb: float, current_gap: float) -> None:
+        nonlocal best_routes, best_ub, best_lb, best_gap
+        improved_ub = current_ub + 1e-9 < best_ub
+        same_ub_better_gap = abs(current_ub - best_ub) <= 1e-9 and current_gap + 1e-9 < best_gap
+        if improved_ub or same_ub_better_gap:
+            best_routes = [route[:] for route in current_routes]
+            best_ub = current_ub
+            best_lb = current_lb
+            best_gap = current_gap
+
+    update_best(routes, ub, lb, gap)
     log_progress(ub, lb, gap)
     memory: List[Tuple[List[List[str]], float, float, float]] = []
     best_gap_seen = float("inf")
@@ -82,6 +99,7 @@ def solve_problem_data(
                 memory.pop(0)
             logger.info("Nouvel état stocké en mémoire (gap %.2f%%).", gap * 100)
             diversification_attempts = 0
+        update_best(routes, ub, lb, gap)
         if abs(ub - previous_ub) < 1e-6:
             stagnant_steps += 1
         else:
@@ -99,11 +117,11 @@ def solve_problem_data(
             improved = False
             if memory:
                 best_index = min(range(len(memory)), key=lambda idx: memory[idx][3])
-                best_routes, best_ub, best_lb, best_gap = memory.pop(best_index)
-                routes = [route[:] for route in best_routes]
-                ub = best_ub
-                lb = best_lb
-                gap = best_gap
+                mem_routes, mem_ub, mem_lb, mem_gap = memory.pop(best_index)
+                routes = [route[:] for route in mem_routes]
+                ub = mem_ub
+                lb = mem_lb
+                gap = mem_gap
                 used_memory = True
                 logger.info(
                     "Gap stagnant détecté : utilisation de la mémoire (gap %.2f%%) pour relancer l'optimisation.",
@@ -116,6 +134,7 @@ def solve_problem_data(
                 lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
                 gap = (ub - lb) / ub if ub > 0 else 0.0
                 log_progress(ub, lb, gap)
+                update_best(routes, ub, lb, gap)
                 if gap + 1e-9 < best_gap_seen:
                     memory.append(([route[:] for route in routes], ub, lb, gap))
                     best_gap_seen = gap
@@ -150,6 +169,7 @@ def solve_problem_data(
                     lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
                     gap = (ub - lb) / ub if ub > 0 else 0.0
                     log_progress(ub, lb, gap)
+                    update_best(routes, ub, lb, gap)
                     if gap + 1e-9 < best_gap_seen:
                         memory.append(([route[:] for route in routes], ub, lb, gap))
                         best_gap_seen = gap
@@ -193,6 +213,7 @@ def solve_problem_data(
                     lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
                     gap = (ub - lb) / ub if ub > 0 else 0.0
                     log_progress(ub, lb, gap)
+                    update_best(routes, ub, lb, gap)
                     diversification_attempts = 0
                     stagnant_steps = 0
                     repeated_gap_steps = 0
@@ -231,8 +252,13 @@ def solve_problem_data(
             iterations,
             gap * 100,
         )
-    longest_route_idx = max(range(len(routes)), key=lambda idx: oracle.route_time(routes[idx]))
-    return routes, ub, lb, gap, longest_route_idx
+    best_longest_route_idx = 0
+    if best_routes:
+        best_longest_route_idx = max(
+            range(len(best_routes)),
+            key=lambda idx: oracle.route_time(best_routes[idx]),
+        )
+    return best_routes, best_ub, best_lb, best_gap, best_longest_route_idx
 
 
 def solve_gtms_cert(
