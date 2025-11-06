@@ -326,7 +326,8 @@ def launch_visual_app(
     ax.set_aspect("equal", adjustable="datalim")
 
     fps = 30
-    frames = int(max_time * fps) + 1
+    idle_tail = 5.0
+    frames = int((max_time + idle_tail) * fps) + 1
 
     def interpolate_position(timeline: RouteTimeline, t: float) -> Coordinate:
         if not timeline.segments:
@@ -375,6 +376,7 @@ def launch_visual_app(
 
     def update(frame_idx: int):
         current_time = frame_idx / fps
+        display_time = min(current_time, max_time)
         artists = []
         for timeline, _color, point, trail in trucks_artists:
             x, y = interpolate_position(timeline, current_time)
@@ -384,7 +386,7 @@ def launch_visual_app(
             ys = [coord[1] for coord in path]
             trail.set_data(xs, ys)
             artists.extend([point, trail])
-        timer_text.set_text(f"Temps écoulé : {current_time:.1f} min")
+        timer_text.set_text(f"Temps écoulé : {display_time:.1f} min")
         return artists + [timer_text]
 
     anim: FuncAnimation | None = None
@@ -392,7 +394,10 @@ def launch_visual_app(
     def start_animation(_event) -> None:
         nonlocal anim
         if anim is not None:
-            anim.event_source.stop()
+            event_source = getattr(anim, "event_source", None)
+            if event_source is not None:
+                event_source.stop()
+            anim = None
         reset_trucks()
         anim = FuncAnimation(
             fig,
@@ -409,6 +414,8 @@ def launch_visual_app(
     button_ax = fig.add_axes([0.75, 0.02, 0.2, 0.06])
     button = Button(button_ax, "Lancer la simulation", color="#4caf50", hovercolor="#66bb6a")
     button.on_clicked(start_animation)
+
+    start_animation(None)
 
     plt.show()
 
