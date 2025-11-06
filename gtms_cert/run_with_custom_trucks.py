@@ -12,6 +12,25 @@ from .main import solve_gtms_cert, print_solution_summary
 from .visualize import TestResult, launch_visual_app
 
 
+def _prompt_positive_int(prompt: str, *, minimum: int = 1) -> int:
+    """Prompt the user for an integer value that satisfies the given minimum."""
+
+    while True:
+        raw = input(prompt).strip()
+        if not raw:
+            print("Veuillez entrer un nombre entier valide.")
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            print("Veuillez entrer un nombre entier valide.")
+            continue
+        if value < minimum:
+            print(f"Veuillez saisir une valeur supérieure ou égale à {minimum}.")
+            continue
+        return value
+
+
 def _load_template(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -110,7 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         temp_input = _prepare_instance(template, args.trucks)
     else:
         if args.clients is None:
-            parser.error("--clients est requis lorsqu'aucun template n'est fourni")
+            print("Entrez le nombre de clients à générer (>= nombre de camions).")
+            args.clients = _prompt_positive_int(
+                "Nombre de clients : ", minimum=args.trucks
+            )
         if args.clients < args.trucks:
             raise SystemExit(
                 "Le nombre de clients doit être supérieur ou égal au nombre de camions."

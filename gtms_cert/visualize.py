@@ -426,7 +426,7 @@ def launch_visual_app(
         fig.canvas.draw_idle()
 
     def _adjust_speed(delta: float) -> None:
-        new_factor = max(0.25, min(4.0, speed_state["factor"] + delta))
+        new_factor = max(0.25, speed_state["factor"] + delta)
         speed_state["factor"] = new_factor
         _apply_speed()
 

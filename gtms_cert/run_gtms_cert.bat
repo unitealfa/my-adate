@@ -33,7 +33,8 @@ if !TRUCKS! LEQ 0 (
     goto END
 )
 
-echo Entrez le nombre de clients pour le test (>= nombre de camions) :
+echo.
+echo Entrez le nombre de clients (>= nombre de camions) :
 set /p CLIENTS=
 
 if "!CLIENTS!"=="" (
