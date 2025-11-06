@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 from typing import Any, Dict, List, Sequence, Tuple, cast
 
+from .geo import DistanceOracle
 from .improve import improve_makespan
 from .io import (
     ProblemData,
@@ -26,6 +28,8 @@ def solve_problem_data(
     lb_iters: int = 200,
     max_gap_iterations: int = 100,
     stagnation_tolerance: int = 5,
+    max_diversifications: int = 3,
+    diversification_tolerance: float = 0.05,
 ) -> Tuple[List[List[str]], float, float, float, int]:
     """Run the GTMS-Cert pipeline on an in-memory problem description."""
     configure_logging()
@@ -48,6 +52,8 @@ def solve_problem_data(
     memory: List[Tuple[List[List[str]], float, float, float]] = []
     best_gap_seen = float("inf")
     logger = logging.getLogger("gtms_cert")
+    rng = random.Random(seed)
+    diversification_attempts = 0
     if gap < best_gap_seen:
         memory.append(([route[:] for route in routes], ub, lb, gap))
         best_gap_seen = gap
@@ -72,6 +78,7 @@ def solve_problem_data(
             if len(memory) > 10:
                 memory.pop(0)
             logger.info("Nouvel état stocké en mémoire (gap %.2f%%).", gap * 100)
+            diversification_attempts = 0
         if abs(ub - previous_ub) < 1e-6:
             stagnant_steps += 1
         else:
@@ -82,37 +89,91 @@ def solve_problem_data(
         else:
             repeated_gap_steps = 0
         previous_gap = gap
-        if repeated_gap_steps >= 5 and memory:
-            best_routes, best_ub, best_lb, best_gap = min(memory, key=lambda entry: entry[3])
-            routes = [route[:] for route in best_routes]
-            ub = best_ub
-            lb = best_lb
-            gap = best_gap
-            logger.info(
-                "Gap stagnant détecté : utilisation de la mémoire (gap %.2f%%) pour relancer l'optimisation.",
-                gap * 100,
-            )
-            routes = improve_makespan(routes, oracle)
-            costs = [oracle.route_time(r) for r in routes]
-            ub = max(costs)
-            lb_tsp = max(lb_tsp, held_karp_1tree_lb(oracle, iterations=50))
-            lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
-            gap = (ub - lb) / ub if ub > 0 else 0.0
-            log_progress(ub, lb, gap)
-            if gap + 1e-9 < best_gap_seen:
-                memory.append(([route[:] for route in routes], ub, lb, gap))
-                best_gap_seen = gap
-                if len(memory) > 10:
-                    memory.pop(0)
-                logger.info(
-                    "État optimisé depuis la mémoire ajouté (gap %.2f%%).",
-                    gap * 100,
-                )
+        if repeated_gap_steps >= 5:
             repeated_gap_steps = 0
             stagnant_steps = 0
+            used_memory = False
+            improved = False
+            if memory:
+                best_index = min(range(len(memory)), key=lambda idx: memory[idx][3])
+                best_routes, best_ub, best_lb, best_gap = memory.pop(best_index)
+                routes = [route[:] for route in best_routes]
+                ub = best_ub
+                lb = best_lb
+                gap = best_gap
+                used_memory = True
+                logger.info(
+                    "Gap stagnant détecté : utilisation de la mémoire (gap %.2f%%) pour relancer l'optimisation.",
+                    gap * 100,
+                )
+                routes = improve_makespan(routes, oracle)
+                costs = [oracle.route_time(r) for r in routes]
+                ub = max(costs)
+                lb_tsp = max(lb_tsp, held_karp_1tree_lb(oracle, iterations=50))
+                lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
+                gap = (ub - lb) / ub if ub > 0 else 0.0
+                log_progress(ub, lb, gap)
+                if gap + 1e-9 < best_gap_seen:
+                    memory.append(([route[:] for route in routes], ub, lb, gap))
+                    best_gap_seen = gap
+                    if len(memory) > 10:
+                        memory.pop(0)
+                    logger.info(
+                        "État optimisé depuis la mémoire ajouté (gap %.2f%%).",
+                        gap * 100,
+                    )
+                    diversification_attempts = 0
+                    improved = True
+                else:
+                    logger.info("Redémarrage depuis la mémoire sans amélioration notable.")
+            diversification_performed = False
+            if not improved and diversification_attempts < max_diversifications:
+                diversification_attempts += 1
+                diversification_performed = _diversify_routes(
+                    routes,
+                    oracle,
+                    rng,
+                    tolerance=diversification_tolerance,
+                )
+                if diversification_performed:
+                    logger.info(
+                        "Diversification appliquée après stagnation (tentative %d).",
+                        diversification_attempts,
+                    )
+                    routes = improve_makespan(routes, oracle)
+                    costs = [oracle.route_time(r) for r in routes]
+                    ub = max(costs)
+                    lb_tsp = max(lb_tsp, held_karp_1tree_lb(oracle, iterations=50))
+                    lb = makespan_lower_bound(oracle, lb_tsp, data.vehicle_count)
+                    gap = (ub - lb) / ub if ub > 0 else 0.0
+                    log_progress(ub, lb, gap)
+                    if gap + 1e-9 < best_gap_seen:
+                        memory.append(([route[:] for route in routes], ub, lb, gap))
+                        best_gap_seen = gap
+                        if len(memory) > 10:
+                            memory.pop(0)
+                        logger.info(
+                            "État diversifié ajouté en mémoire (gap %.2f%%).",
+                            gap * 100,
+                        )
+                        diversification_attempts = 0
+                        improved = True
+                else:
+                    logger.info(
+                        "Échec de la diversification aléatoire (tentative %d).",
+                        diversification_attempts,
+                    )
+            elif not improved and diversification_attempts >= max_diversifications:
+                logger.info(
+                    "Nombre maximal de tentatives de diversification atteint (%d).",
+                    max_diversifications,
+                )
             previous_ub = ub
             previous_gap = gap
-            continue
+            if improved or diversification_performed or used_memory:
+                continue
+            logger.info("Aucune stratégie de diversification disponible après stagnation ; arrêt anticipé.")
+            break
         if stagnant_steps >= stagnation_tolerance:
             logger.info(
                 "Arrêt de l'amélioration : aucune réduction du makespan après %d itérations.",
@@ -152,6 +213,48 @@ def _parts_to_routes(parts: List[tuple[int, int]], tour: List[str], depot: str) 
         segment = [depot] + tour[start : end + 1] + [depot]
         routes.append(segment)
     return routes
+
+
+def _diversify_routes(
+    routes: List[List[str]],
+    oracle: DistanceOracle,
+    rng: random.Random,
+    *,
+    attempts: int = 40,
+    tolerance: float = 0.05,
+) -> bool:
+    """Introduce a controlled random perturbation to escape stagnation."""
+
+    if not routes:
+        return False
+    current_makespan = max(oracle.route_time(r) for r in routes)
+    for attempt in range(max(1, attempts)):
+        longest_idx = max(range(len(routes)), key=lambda idx: oracle.route_time(routes[idx]))
+        longest_route = routes[longest_idx]
+        if len(longest_route) <= 3:
+            return False
+        node_pos = rng.randrange(1, len(longest_route) - 1)
+        node = longest_route[node_pos]
+        destination_candidates = [idx for idx in range(len(routes)) if idx != longest_idx]
+        if not destination_candidates:
+            return False
+        dest_idx = rng.choice(destination_candidates)
+        dest_route = routes[dest_idx]
+        insert_pos = rng.randrange(1, len(dest_route))
+        new_routes = [list(r) for r in routes]
+        new_longest = longest_route[:node_pos] + longest_route[node_pos + 1 :]
+        if len(new_longest) < 3:
+            continue
+        new_dest = dest_route[:insert_pos] + [node] + dest_route[insert_pos:]
+        new_routes[longest_idx] = new_longest
+        new_routes[dest_idx] = new_dest
+        new_makespan = max(oracle.route_time(r) for r in new_routes)
+        dynamic_tolerance = tolerance * (1 + attempt // 10)
+        if new_makespan <= current_makespan * (1 + dynamic_tolerance):
+            routes.clear()
+            routes.extend(new_routes)
+            return True
+    return False
 
 
 def _prompt_int(
