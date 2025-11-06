@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-from .io import ProblemData, read_input
-from .main import solve_gtms_cert
+from .io import ProblemData, build_output_payload, read_input
+from .main import solve_gtms_cert, solve_problem_data
 
 
 Coordinate = Tuple[float, float]
@@ -261,7 +261,12 @@ def launch_visual_app(
     tests = list(tests) if tests is not None else []
 
     positions = compute_node_positions(data.oracle)
-    timelines = build_route_timelines([route["sequence"] for route in result["routes"]], data.oracle)
+    current_result = result
+    current_vehicle_count = len(current_result.get("routes", []))
+    timelines = build_route_timelines(
+        [route["sequence"] for route in current_result.get("routes", [])],
+        data.oracle,
+    )
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.set_title("Simulation GTMS-Cert — clients et camions")
@@ -278,28 +283,43 @@ def launch_visual_app(
     ax.scatter(client_x, client_y, s=25, c="#1f77b4", alpha=0.7, label="Clients")
     ax.scatter([depot_pos[0]], [depot_pos[1]], s=200, c="#d62728", marker="*", label="Dépôt", zorder=5)
 
-    cmap = plt.cm.get_cmap("tab20", len(timelines))
-    trucks_artists = []
+    cmap_name = "tab20"
+    route_lines: List[plt.Line2D] = []
+    trucks_artists: List[tuple[RouteTimeline, tuple[float, float, float, float], plt.Line2D, plt.Line2D]] = []
     max_time = 0.0
-    for idx, timeline in enumerate(timelines):
-        color = cmap(idx)
-        xs = [positions[node][0] for node in timeline.route]
-        ys = [positions[node][1] for node in timeline.route]
-        ax.plot(xs, ys, color=color, alpha=0.35, linewidth=1.5)
-        trail_line = ax.plot([], [], color=color, linewidth=2.0, alpha=0.8, zorder=6)[0]
-        truck_point = ax.plot([], [], marker="s", color=color, markersize=8, zorder=10)[0]
-        trucks_artists.append((timeline, color, truck_point, trail_line))
-        max_time = max(max_time, timeline.total_time)
 
-    stats_text = (
-        f"Camions : {len(timelines)}\n"
-        f"Makespan : {result['makespan']:.2f} min\n"
-        f"Gap : {result['gap'] * 100:.2f}%"
-    )
-    fig.text(
+    def _draw_routes() -> None:
+        """Draw the route polylines and animated trucks for the current solution."""
+
+        nonlocal trucks_artists, max_time, route_lines
+        cmap = plt.cm.get_cmap(cmap_name, max(1, len(timelines)))
+        max_time = 0.0
+        trucks_artists = []
+        route_lines = []
+        for idx, timeline in enumerate(timelines):
+            color = cmap(idx)
+            xs = [positions[node][0] for node in timeline.route]
+            ys = [positions[node][1] for node in timeline.route]
+            route_line, = ax.plot(xs, ys, color=color, alpha=0.35, linewidth=1.5)
+            trail_line = ax.plot([], [], color=color, linewidth=2.0, alpha=0.8, zorder=6)[0]
+            truck_point = ax.plot([], [], marker="s", color=color, markersize=8, zorder=10)[0]
+            trucks_artists.append((timeline, color, truck_point, trail_line))
+            route_lines.append(route_line)
+            max_time = max(max_time, timeline.total_time)
+
+    _draw_routes()
+
+    def _format_stats(payload: dict, trucks: int) -> str:
+        return (
+            f"Camions : {trucks}\n"
+            f"Makespan : {payload['makespan']:.2f} min\n"
+            f"Gap : {payload['gap'] * 100:.2f}%"
+        )
+
+    stats_annotation = fig.text(
         0.02,
         0.95,
-        stats_text,
+        _format_stats(current_result, current_vehicle_count),
         ha="left",
         va="top",
         fontsize=10,
@@ -437,6 +457,45 @@ def launch_visual_app(
 
     reset_trucks()
 
+    proposal_text = fig.text(
+        0.02,
+        0.5,
+        "",
+        ha="left",
+        va="top",
+        fontsize=9,
+        family="monospace",
+        bbox=dict(facecolor="white", alpha=0.85, edgecolor="#555555"),
+        visible=False,
+    )
+
+    proposal_solution: dict | None = None
+
+    def _update_frames() -> None:
+        nonlocal frames
+        frames = int((max_time + idle_tail) * fps) + 1
+
+    def _apply_solution(new_payload: dict, trucks: int) -> None:
+        nonlocal current_result, current_vehicle_count, timelines
+        current_result = new_payload
+        current_vehicle_count = trucks
+        for line in route_lines:
+            line.remove()
+        for _timeline, _color, point, trail in trucks_artists:
+            point.remove()
+            trail.remove()
+        timelines = build_route_timelines(
+            [route["sequence"] for route in current_result.get("routes", [])],
+            data.oracle,
+        )
+        _draw_routes()
+        _update_frames()
+        reset_trucks()
+        stats_annotation.set_text(_format_stats(current_result, current_vehicle_count))
+        timer_text.set_text("Temps écoulé : 0.0 min")
+        start_animation(None)
+        fig.canvas.draw_idle()
+
     button_ax = fig.add_axes([0.75, 0.02, 0.2, 0.06])
     button = Button(button_ax, "Lancer la simulation", color="#4caf50", hovercolor="#66bb6a")
     button.on_clicked(start_animation)
@@ -447,14 +506,113 @@ def launch_visual_app(
     fast_ax = fig.add_axes([0.63, 0.02, 0.1, 0.06])
     fast_button = Button(fast_ax, "Accélérer", color="#1976d2", hovercolor="#42a5f5")
 
+    propose_ax = fig.add_axes([0.31, 0.02, 0.18, 0.06])
+    propose_button = Button(
+        propose_ax,
+        "Proposer gap 0",
+        color="#8e24aa",
+        hovercolor="#ba68c8",
+    )
+
+    apply_ax = fig.add_axes([0.12, 0.02, 0.18, 0.06])
+    apply_button = Button(
+        apply_ax,
+        "Appliquer la proposition",
+        color="#00695c",
+        hovercolor="#26a69a",
+    )
+
     def _on_slow(_event) -> None:
         _adjust_speed(-0.25)
 
     def _on_fast(_event) -> None:
         _adjust_speed(0.25)
 
+    def _on_propose(_event) -> None:
+        nonlocal proposal_solution
+        proposal_text.set_visible(True)
+        if current_result.get("gap", 0.0) <= 1e-6:
+            proposal_text.set_text("Le gap est déjà nul : aucune amélioration nécessaire.")
+            fig.canvas.draw_idle()
+            return
+        base_trucks = current_vehicle_count
+        max_trucks_search = len(data.clients)
+        best_payload: dict | None = None
+        best_trucks = base_trucks
+        try:
+            for trucks in range(base_trucks + 1, max_trucks_search + 1):
+                candidate_data = ProblemData(
+                    depot_id=data.depot_id,
+                    vehicle_count=trucks,
+                    use_all=data.use_all,
+                    clients=list(data.clients),
+                    oracle=data.oracle,
+                )
+                routes, ub, lb, gap, longest_idx = solve_problem_data(
+                    candidate_data,
+                    seed=42,
+                    lb_iters=150,
+                )
+                payload = build_output_payload(routes, data.oracle, ub, lb, gap, longest_idx)
+                if gap <= 1e-6:
+                    best_payload = payload
+                    best_trucks = trucks
+                    break
+                if best_payload is None or gap < best_payload.get("gap", 1.0):
+                    best_payload = payload
+                    best_trucks = trucks
+        except ValueError as exc:
+            proposal_text.set_text(f"Erreur lors de la génération de la proposition : {exc}")
+            proposal_solution = None
+            fig.canvas.draw_idle()
+            return
+
+        if best_payload is None:
+            proposal_text.set_text("Impossible de calculer une proposition améliorée.")
+            proposal_solution = None
+            fig.canvas.draw_idle()
+            return
+
+        extra = best_trucks - base_trucks
+        gap_value = best_payload.get("gap", 0.0) * 100
+        if gap_value <= 1e-4:
+            proposal_text.set_text(
+                f"Proposition : ajouter {extra} camion(s) (total {best_trucks}) pour atteindre un gap de 0 %."
+            )
+        else:
+            proposal_text.set_text(
+                (
+                    "Gap 0 % non atteint. Meilleure suggestion : ajouter "
+                    f"{extra} camion(s) (total {best_trucks}) pour un gap de {gap_value:.2f} %."
+                )
+            )
+        proposal_solution = {"payload": best_payload, "trucks": best_trucks}
+        fig.canvas.draw_idle()
+
+    def _on_apply(_event) -> None:
+        if proposal_solution is None:
+            proposal_text.set_visible(True)
+            proposal_text.set_text(
+                "Aucune proposition disponible. Cliquez d'abord sur 'Proposer gap 0'."
+            )
+            fig.canvas.draw_idle()
+            return
+        selected = proposal_solution
+        _apply_solution(selected["payload"], selected["trucks"])
+        proposal_text.set_visible(True)
+        proposal_text.set_text(
+            (
+                f"Solution appliquée avec {selected['trucks']} camions "
+                f"(gap {selected['payload']['gap'] * 100:.2f} %)."
+            )
+        )
+        proposal_solution = None
+        fig.canvas.draw_idle()
+
     slow_button.on_clicked(_on_slow)
     fast_button.on_clicked(_on_fast)
+    propose_button.on_clicked(_on_propose)
+    apply_button.on_clicked(_on_apply)
 
     _apply_speed()
 
