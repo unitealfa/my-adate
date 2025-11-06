@@ -40,11 +40,15 @@ This project addresses the Vehicle Routing Problem (VRP) as part of the ADEME in
 
 Open `Livrable_Modélisation.ipynb` in JupyterLab or VS Code and run the cells to visualize and analyze the VRP model.
 
-To run the solver from the command line with a custom number of trucks, generate a fresh random instance, and immediately display the interactive route graph, use:
+### Lancement automatique du solveur (Windows)
 
-```sh
-python -m gtms_cert.run_with_custom_trucks --trucks 10 --clients 120 --show
-```
+Un fichier `gtms_cert\run_gtms_cert.bat` est fourni pour lancer automatiquement plusieurs exécutions du solveur GTMS-Cert sur une machine de type Intel i7 11ᵉ génération avec 16 Go de RAM. Il démarre jusqu’à six processus en parallèle avec des graines différentes, surveille les journaux et arrête tout dès qu’un `gap` ≤ 1 % est atteint.
+
+1. Ouvrez l’Explorateur de fichiers et double-cliquez sur `gtms_cert\run_gtms_cert.bat` (ou exécutez-le depuis un terminal `cmd`).
+2. Attendez que la fenêtre console indique la fin de la supervision. Les journaux détaillés sont stockés dans le dossier `runs\` à la racine du projet.
+3. Relancez le script si vous souhaitez explorer de nouvelles graines.
+
+Le script applique automatiquement les paramètres recommandés (5 camions, 200 clients, graines fixes) pour rechercher un `gap` inférieur à 1 % sans intervention supplémentaire.
 
 ## Dependencies
 
