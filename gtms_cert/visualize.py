@@ -346,7 +346,7 @@ def launch_visual_app(
         current_time = frame_idx / fps
         for timeline, _color, point in trucks_artists:
             x, y = interpolate_position(timeline, current_time)
-            point.set_data(x, y)
+            point.set_data([x], [y])
         timer_text.set_text(f"Temps écoulé : {current_time:.1f} min")
         return [artist for _timeline, _color, artist in trucks_artists] + [timer_text]
 
