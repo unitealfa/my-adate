@@ -98,6 +98,22 @@ def prompt_int(question: str, min_value: int = 1) -> int:
         return value
 
 
+def prompt_optional_float(question: str, min_value: float | None = 0.0) -> float | None:
+    while True:
+        raw = input(question).strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            print("Veuillez entrer un nombre valide (utilisez un point comme séparateur décimal).")
+            continue
+        if min_value is not None and value < min_value:
+            print(f"Merci de saisir une valeur supérieure ou égale à {min_value}.")
+            continue
+        return value
+
+
 def choose_saved_dataset(saved: Dict[str, str]) -> Path | None:
     if not saved:
         print("Aucun scénario enregistré n'est disponible pour le moment.")
@@ -120,11 +136,13 @@ def choose_saved_dataset(saved: Dict[str, str]) -> Path | None:
         print("Numéro hors plage.")
 
 
-def interactive_setup() -> tuple[int, Path, int | None]:
+def interactive_setup() -> tuple[int, Path, int | None, float | None]:
     print("=== Assistant VRPTW ===")
     k = prompt_int("Nombre de camions disponibles : ")
     saved = load_saved_datasets()
-    while True:
+    dataset_path: Path | None = None
+    seed_used: int | None = None
+    while dataset_path is None:
         print("\nQue souhaitez-vous faire ?")
         print("  1. Générer une carte de clients aléatoire")
         print("  2. Charger un fichier de données existant")
@@ -136,6 +154,7 @@ def interactive_setup() -> tuple[int, Path, int | None]:
             seed_input = input("Graine aléatoire (laisser vide pour défaut 42) : ").strip()
             seed = int(seed_input) if seed_input else 42
             dataset_path = generate_random(n_clients, seed, DEFAULT_GENERATED_DIR)
+            seed_used = seed
             print(f"Jeu de données généré : {dataset_path}")
             if prompt_yes_no("Souhaitez-vous enregistrer ce scénario pour le réutiliser plus tard ?"):
                 while True:
@@ -148,19 +167,28 @@ def interactive_setup() -> tuple[int, Path, int | None]:
                     saved[name] = str(dataset_path)
                     print(f"Scénario enregistré sous le nom '{name}'.")
                     break
-            return k, dataset_path, seed
+            continue
         if choice == "2":
             path = Path(input("Chemin du fichier JSON : ").strip())
             if path.exists():
-                return k, path, None
+                dataset_path = path
+                seed_used = None
+                continue
             print("Fichier introuvable, merci de réessayer.")
             continue
         if choice == "3":
             dataset_path = choose_saved_dataset(saved)
             if dataset_path is not None:
-                return k, dataset_path, None
+                seed_used = None
+                continue
             continue
         print("Choix invalide, merci de sélectionner 1, 2 ou 3.")
+
+    shift_duration = prompt_optional_float(
+        "Durée maximale de service par camion (laisser vide pour aucune limite) : "
+    )
+
+    return k, dataset_path, seed_used, shift_duration
 
 def main():
     args = parse_args()
@@ -168,7 +196,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.interactive:
-        k, dataset_path, seed_used = interactive_setup()
+        k, dataset_path, seed_used, shift_duration = interactive_setup()
     else:
         k = args.k
         if args.data:
@@ -177,15 +205,16 @@ def main():
         else:
             dataset_path = generate_random(args.n_clients, args.seed, DEFAULT_GENERATED_DIR)
             seed_used = args.seed
+        shift_duration = args.shift_duration
 
-    data, best = solve(str(dataset_path), k=k, shift_duration=args.shift_duration, time_limit_s=args.time_limit)
+    data, best = solve(str(dataset_path), k=k, shift_duration=shift_duration, time_limit_s=args.time_limit)
 
     # sorties
     last_return = best.last_return
     gap = None
-    if args.shift_duration is not None:
-        gap = args.shift_duration - last_return
-        gap_pct = (gap / args.shift_duration) * 100 if args.shift_duration else None
+    if shift_duration is not None:
+        gap = shift_duration - last_return
+        gap_pct = (gap / shift_duration) * 100 if shift_duration else None
     else:
         gap_pct = None
 
@@ -202,6 +231,8 @@ def main():
         msg += f" | Gap to shift: {gap:.3f}"
         if gap_pct is not None:
             msg += f" ({gap_pct:.2f}%)"
+    else:
+        msg += " | Gap to shift: N/A"
     print(msg)
     if best.routes:
         route_durations = []
