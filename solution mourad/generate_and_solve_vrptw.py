@@ -22,8 +22,15 @@ from typing import Iterable
 
 # Ensure the local pyvrp package is importable when running from the source tree.
 REPO_ROOT = Path(__file__).resolve().parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+PYVRP_SRC = (REPO_ROOT / ".." / "PyVRP-main").resolve()
+
+# Insert both the current directory (for generated packages) and the PyVRP
+# source tree so the script can directly use the repository's implementation
+# without requiring an installed wheel.
+for path in (REPO_ROOT, PYVRP_SRC):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 from pyvrp import read  # type: ignore  # noqa: E402
 from pyvrp.solve import solve  # type: ignore  # noqa: E402
