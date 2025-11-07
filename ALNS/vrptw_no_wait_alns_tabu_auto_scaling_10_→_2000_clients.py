@@ -7,7 +7,7 @@ Modes supportés :
   • AVEC attente (wait)
   • HYBRIDE "JIT‑WAIT" : sans attente par défaut, mais **autorise l'attente
     uniquement si cela rend une route faisable** (fallback local) — utile quand
-    un client isolé (ex : #71) rend l'instance infaisable en no‑wait pur.
+    un client isolé rend l'instance infaisable en no‑wait pur.
 
 Objectif lexicographique :
   Phase A  → minimiser le makespan T (retour du dernier camion)
@@ -26,10 +26,13 @@ Correctifs & robustesse
 • Ajout d'un **mode hybride JIT‑WAIT** : si une évaluation no‑wait échoue,
   on retente la **même route** en mode wait et on **log** les clients qui ont
   effectivement nécessité une attente.
-• Correction d'un bug dans `destroy_shaw` (cas liste vide).
+• Correction corner‑cases dans les opérateurs de destroy.
+• **NOUVEAU : Loader / barre de progression** pour ALNS et Tabu :
+  - utilise `tqdm` si disponible ;
+  - sinon, fallback en console avec pourcentage + ETA (une seule ligne mise à jour).
 
 Dépendances : numpy, matplotlib
-Optionnel : tqdm (si vous voulez une barre de progression), vrplib (pour tests VRPLIB).
+Optionnel : tqdm (pour la barre de progression), vrplib (pour tests VRPLIB).
 """
 from __future__ import annotations
 import math
@@ -42,6 +45,13 @@ from typing import List, Tuple, Dict, Optional, Set
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
+
+# tqdm (optionnel)
+try:  # barre de progression si installée
+    from tqdm import tqdm  # type: ignore
+    _HAS_TQDM = True
+except Exception:
+    _HAS_TQDM = False
 
 # ===========================
 #  Config globale
@@ -269,9 +279,7 @@ def eval_route_wait_collect(route: List[int], inst: Instance) -> Tuple[bool, flo
     for p in range(1, len(seq)):
         i = seq[p-1]; j = seq[p]
         arrival = t + inst.service[i] + inst.travel[i, j]
-        waited = 0.0
         if arrival < inst.tw_a[j]:
-            waited = inst.tw_a[j] - arrival
             wait_pts.append(j)
         t = max(arrival, inst.tw_a[j])
         if t > inst.tw_b[j] + 1e-9:
@@ -417,6 +425,16 @@ def greedy_init(inst: Instance, seed: int) -> Solution:
     return sol
 
 # ===========================
+#  Helpers progression (loader)
+# ===========================
+
+def _progress_start(total: int, desc: str):
+    """Crée une barre tqdm si dispo, sinon None (fallback console)."""
+    if _HAS_TQDM:
+        return tqdm(total=total, desc=desc, ncols=80, leave=False, mininterval=0.2)
+    return None
+
+# ===========================
 #  ALNS — Phase A (min T)
 # ===========================
 
@@ -442,8 +460,8 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
     remove_min = int(params["remove_pct_min"]) 
     remove_max = int(params["remove_pct_max"]) 
 
-    # Pré‑calcul k-nearest (non utilisé ici mais prêt pour optimisations ultérieures)
-    _nearest = [list(np.argsort(inst.dist[i])[:k_nearest]) for i in range(inst.n+1)]
+    # Pré‑calcul k-nearest (réservé, pas indispensable ici)
+    _ = [list(np.argsort(inst.dist[i])[:k_nearest]) for i in range(inst.n+1)]
 
     # SA acceptance
     T0 = max(1.0, params["sa_T0_factor"] * max(1.0, cur.T_ret))
@@ -451,6 +469,9 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
     decay = float(params["sa_decay"]) 
 
     print(f"[ALNS] Démarrage: iters={iters}, remove%={remove_min}–{remove_max}, k-nearest={k_nearest}, T0≈{T0:.3f}")
+
+    pbar = _progress_start(iters, "ALNS Phase A")
+    t_start = time.time()
 
     def destroy_random(routes: List[List[int]]):
         allc = [c for r in routes for c in r]
@@ -467,7 +488,6 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
             return [list(r) for r in routes], []
         seedc = rng.choice(allc)
         q = max(1, len(allc) * rng.randrange(remove_min, remove_max+1) // 100)
-        # score de similarité
         sim = [(c, shaw_relatedness(seedc, c, inst)) for c in allc]
         sim.sort(key=lambda x: x[1])
         removed = [c for c,_ in sim[:q]]
@@ -478,7 +498,6 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
         rr = [list(r) for r in routes]
         for c in removed:
             placed = False
-            # essai sur routes courtes d'abord
             cand_routes = sorted(range(inst.k), key=lambda ridx: len(rr[ridx]))
             for ridx in cand_routes:
                 r = rr[ridx]
@@ -527,8 +546,17 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
         routes_r = repair_best_insertion(routes_d, removed)
         if routes_r is None:
             temp *= decay
-            if verbose and it % 2000 == 0:
-                print(f"[ALNS] it={it} (échec repair) — T*={best.T_ret:.2f} D*={best.D_tot:.2f}")
+            # update loader
+            if _HAS_TQDM and pbar is not None:
+                pbar.set_postfix(T=f"{cur.T_ret:.2f}", best=f"{best.T_ret:.2f}")
+                pbar.update(1)
+            else:
+                if verbose and (it == 1 or it % max(1, iters//100) == 0):
+                    elapsed = time.time() - t_start
+                    pct = 100.0 * it / iters
+                    eta = elapsed * (iters/it - 1.0)
+                    sys.stdout.write(f"\r[ALNS] {pct:5.1f}%  T={cur.T_ret:.2f} best={best.T_ret:.2f}  ETA~{eta:5.1f}s")
+                    sys.stdout.flush()
             continue
 
         cand = eval_solution_generic(routes_r, inst)
@@ -538,11 +566,26 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
             cur = cand
             if cand.T_ret < best.T_ret - 1e-9 or (abs(cand.T_ret - best.T_ret) <= 1e-9 and cand.D_tot < best.D_tot):
                 best = cand
-                if verbose:
-                    print(f"[ALNS] ✓ it={it}: nouveau best T={best.T_ret:.2f} D={best.D_tot:.2f}")
+                if verbose and not _HAS_TQDM:
+                    print(f"\n[ALNS] ✓ it={it}: nouveau best T={best.T_ret:.2f} D={best.D_tot:.2f}")
         temp *= decay
-        if verbose and it % 2000 == 0:
-            print(f"[ALNS] it={it}: T={cur.T_ret:.2f} (best {best.T_ret:.2f})")
+
+        # update loader
+        if _HAS_TQDM and pbar is not None:
+            pbar.set_postfix(T=f"{cur.T_ret:.2f}", best=f"{best.T_ret:.2f}")
+            pbar.update(1)
+        else:
+            if verbose and (it == 1 or it % max(1, iters//100) == 0):
+                elapsed = time.time() - t_start
+                pct = 100.0 * it / iters
+                eta = elapsed * (iters/it - 1.0)
+                sys.stdout.write(f"\r[ALNS] {pct:5.1f}%  T={cur.T_ret:.2f} best={best.T_ret:.2f}  ETA~{eta:5.1f}s")
+                sys.stdout.flush()
+
+    if _HAS_TQDM and pbar is not None:
+        pbar.close()
+    else:
+        print()  # retour ligne pour le loader console
 
     best.meta.update({"phase": "A", "iters": iters})
     print(f"[ALNS] Terminé. Best T={best.T_ret:.2f}, D={best.D_tot:.2f}")
@@ -583,6 +626,9 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
         return feas_all, T, D
 
     print(f"[Tabu] Démarrage polishing distance avec contrainte T ≤ {T_star:.2f}…")
+
+    pbar = _progress_start(steps, "Tabu Phase B")
+    t_start = time.time()
 
     for it in range(1, steps+1):
         best_nbr = None
@@ -662,8 +708,17 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
                             best_move = ("2opt*", None)
 
         if best_nbr is None:
-            if verbose and it % 200 == 0:
-                print(f"[Tabu] it={it}: aucun voisin faisable (T≤T*). On continue…")
+            # update loader
+            if _HAS_TQDM and pbar is not None:
+                pbar.set_postfix(D=f"{cur.D_tot:.2f}", best=f"{best.D_tot:.2f}")
+                pbar.update(1)
+            else:
+                if verbose and (it == 1 or it % max(1, steps//100) == 0):
+                    elapsed = time.time() - t_start
+                    pct = 100.0 * it / steps
+                    eta = elapsed * (steps/it - 1.0)
+                    sys.stdout.write(f"\r[Tabu] {pct:5.1f}%  D={cur.D_tot:.2f} best={best.D_tot:.2f}  ETA~{eta:5.1f}s")
+                    sys.stdout.flush()
             continue
 
         # Appliquer meilleur voisin
@@ -678,10 +733,25 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
 
         if cur.D_tot + 1e-9 < best.D_tot:
             best = cur
-            if verbose:
-                print(f"[Tabu] ✓ it={it}: nouveau best D={best.D_tot:.2f} (T={best.T_ret:.2f})")
-        elif verbose and it % 500 == 0:
-            print(f"[Tabu] it={it}: D={cur.D_tot:.2f} (best {best.D_tot:.2f})")
+            if verbose and not _HAS_TQDM:
+                print(f"\n[Tabu] ✓ it={it}: nouveau best D={best.D_tot:.2f} (T={best.T_ret:.2f})")
+
+        # update loader
+        if _HAS_TQDM and pbar is not None:
+            pbar.set_postfix(D=f"{cur.D_tot:.2f}", best=f"{best.D_tot:.2f}")
+            pbar.update(1)
+        else:
+            if verbose and (it == 1 or it % max(1, steps//100) == 0):
+                elapsed = time.time() - t_start
+                pct = 100.0 * it / steps
+                eta = elapsed * (steps/it - 1.0)
+                sys.stdout.write(f"\r[Tabu] {pct:5.1f}%  D={cur.D_tot:.2f} best={best.D_tot:.2f}  ETA~{eta:5.1f}s")
+                sys.stdout.flush()
+
+    if _HAS_TQDM and pbar is not None:
+        pbar.close()
+    else:
+        print()
 
     best.meta.update({"phase": "B", "steps": steps, "T_star": T_star})
     print(f"[Tabu] Terminé. D*={best.D_tot:.2f} sous T≤{T_star:.2f}")
