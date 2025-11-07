@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-VRPTW (fenêtres de temps) avec k véhicules identiques
-Modes supportés :
-  • SANS attente (no‑wait)
-  • AVEC attente (wait)
-  • HYBRIDE "JIT‑WAIT" : sans attente par défaut, mais **autorise l'attente
-    uniquement si cela rend une route faisable** (fallback local) — utile quand
-    un client isolé rend l'instance infaisable en no‑wait pur.
+VRPTW (fenÃƒÂªtres de temps) avec k vÃƒÂ©hicules identiques
+Modes supportÃƒÂ©s :
+  Ã¢â‚¬Â¢ SANS attente (noÃ¢â‚¬â€˜wait)
+  Ã¢â‚¬Â¢ AVEC attente (wait)
+  Ã¢â‚¬Â¢ HYBRIDE "JITÃ¢â‚¬â€˜WAIT" : sans attente par dÃƒÂ©faut, mais **autorise l'attente
+    uniquement si cela rend une route faisable** (fallback local) Ã¢â‚¬â€ utile quand
+    un client isolÃƒÂ© rend l'instance infaisable en noÃ¢â‚¬â€˜wait pur.
 
 Objectif lexicographique :
-  Phase A  → minimiser le makespan T (retour du dernier camion)
-  Phase B  → minimiser la distance D sous la contrainte T ≤ T*
+  Phase A  Ã¢â€ â€™ minimiser le makespan T (retour du dernier camion)
+  Phase B  Ã¢â€ â€™ minimiser la distance D sous la contrainte T Ã¢â€°Â¤ T*
 
-Conçu pour n ∈ [10, 2000] avec auto-paramétrage et journaux de progression.
-Affiche à la fin :
-  - Récapitulatif (n, k, seed, T*, distance, gap)
-  - Figure statique des tournées
-  - Animation (matplotlib) des camions qui se déplacent
-  - Si JIT‑WAIT a été nécessaire : **liste des clients pour lesquels une attente a été appliquée**
+ConÃƒÂ§u pour n Ã¢Ë†Ë† [10, 2000] avec auto-paramÃƒÂ©trage et journaux de progression.
+Affiche ÃƒÂ  la fin :
+  - RÃƒÂ©capitulatif (n, k, seed, T*, distance, gap)
+  - Figure statique des tournÃƒÂ©es
+  - Animation (matplotlib) des camions qui se dÃƒÂ©placent
+  - Si JITÃ¢â‚¬â€˜WAIT a ÃƒÂ©tÃƒÂ© nÃƒÂ©cessaire : **liste des clients pour lesquels une attente a ÃƒÂ©tÃƒÂ© appliquÃƒÂ©e**
 
 Correctifs & robustesse
 -----------------------
-• Correction récursion infinie : `eval_route` ne s'appelle plus lui‑même.
-• Ajout d'un **mode hybride JIT‑WAIT** : si une évaluation no‑wait échoue,
-  on retente la **même route** en mode wait et on **log** les clients qui ont
-  effectivement nécessité une attente.
-• Correction corner‑cases dans les opérateurs de destroy.
-• **NOUVEAU : Loader / barre de progression** pour ALNS et Tabu :
+Ã¢â‚¬Â¢ Correction rÃƒÂ©cursion infinie : `eval_route` ne s'appelle plus luiÃ¢â‚¬â€˜mÃƒÂªme.
+Ã¢â‚¬Â¢ Ajout d'un **mode hybride JITÃ¢â‚¬â€˜WAIT** : si une ÃƒÂ©valuation noÃ¢â‚¬â€˜wait ÃƒÂ©choue,
+  on retente la **mÃƒÂªme route** en mode wait et on **log** les clients qui ont
+  effectivement nÃƒÂ©cessitÃƒÂ© une attente.
+Ã¢â‚¬Â¢ Correction cornerÃ¢â‚¬â€˜cases dans les opÃƒÂ©rateurs de destroy.
+Ã¢â‚¬Â¢ **NOUVEAU : Loader / barre de progression** pour ALNS et Tabu :
   - utilise `tqdm` si disponible ;
-  - sinon, fallback en console avec pourcentage + ETA (une seule ligne mise à jour).
+  - sinon, fallback en console avec pourcentage + ETA (une seule ligne mise ÃƒÂ  jour).
 
-Dépendances : numpy, matplotlib
+DÃƒÂ©pendances : numpy, matplotlib
 Optionnel : tqdm (pour la barre de progression), vrplib (pour tests VRPLIB).
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 
 # tqdm (optionnel)
-try:  # barre de progression si installée
+try:  # barre de progression si installÃƒÂ©e
     from tqdm import tqdm  # type: ignore
     _HAS_TQDM = True
 except Exception:
@@ -57,13 +57,13 @@ except Exception:
 #  Config globale
 # ===========================
 
-# Modes globaux basculés par run_solve
+# Modes globaux basculÃƒÂ©s par run_solve
 ALLOW_WAIT: bool = False           # tout en wait
-ALLOW_JIT_WAIT: bool = True        # fallback local si no‑wait infaisable
+ALLOW_JIT_WAIT: bool = True        # fallback local si noÃ¢â‚¬â€˜wait infaisable
 
-# Journalisation des attentes « obligatoires » utilisées en JIT
-JIT_WAIT_CLIENTS: Set[int] = set()  # ensemble des clients où une attente a réellement été appliquée
-JIT_ACTIVATIONS: int = 0            # nb de fois où un fallback JIT a été utilisé
+# Journalisation des attentes Ã‚Â« obligatoires Ã‚Â» utilisÃƒÂ©es en JIT
+JIT_WAIT_CLIENTS: Set[int] = set()  # ensemble des clients oÃƒÂ¹ une attente a rÃƒÂ©ellement ÃƒÂ©tÃƒÂ© appliquÃƒÂ©e
+JIT_ACTIVATIONS: int = 0            # nb de fois oÃƒÂ¹ un fallback JIT a ÃƒÂ©tÃƒÂ© utilisÃƒÂ©
 JIT_PRINT_LIMIT: int = 10           # limiter le spam en console
 
 # ===========================
@@ -73,28 +73,28 @@ JIT_PRINT_LIMIT: int = 10           # limiter le spam en console
 @dataclass
 class Instance:
     n: int                 # nombre de clients
-    k: int                 # nombre de véhicules
-    coords: np.ndarray     # (n+1, 2) : 0 = dépôt, 1..n = clients
-    service: np.ndarray    # (n+1,)    : service times (0 pour dépôt)
-    tw_a: np.ndarray       # (n+1,)    : earliest times (0 pour dépôt)
-    tw_b: np.ndarray       # (n+1,)    : latest times (grand intervalle pour dépôt)
+    k: int                 # nombre de vÃƒÂ©hicules
+    coords: np.ndarray     # (n+1, 2) : 0 = dÃƒÂ©pÃƒÂ´t, 1..n = clients
+    service: np.ndarray    # (n+1,)    : service times (0 pour dÃƒÂ©pÃƒÂ´t)
+    tw_a: np.ndarray       # (n+1,)    : earliest times (0 pour dÃƒÂ©pÃƒÂ´t)
+    tw_b: np.ndarray       # (n+1,)    : latest times (grand intervalle pour dÃƒÂ©pÃƒÂ´t)
     dist: np.ndarray       # (n+1,n+1) : distances euclidiennes
     travel: np.ndarray     # (n+1,n+1) : temps de trajet (ici = distance)
 
 @dataclass
 class Solution:
-    routes: List[List[int]]        # chaque route = liste de clients (sans dépôt)
-    T_ret: float                   # makespan = max retour véhicule
+    routes: List[List[int]]        # chaque route = liste de clients (sans dÃƒÂ©pÃƒÂ´t)
+    T_ret: float                   # makespan = max retour vÃƒÂ©hicule
     D_tot: float                   # distance totale
-    feasible: bool                 # faisabilité selon le mode (wait/no‑wait/hybride)
+    feasible: bool                 # faisabilitÃƒÂ© selon le mode (wait/noÃ¢â‚¬â€˜wait/hybride)
     meta: Dict[str, float]         # infos diverses (ex: best_iter, time_ms, etc.)
 
 # ---------------------------
-#   Paramètres auto‑scalés
+#   ParamÃƒÂ¨tres autoÃ¢â‚¬â€˜scalÃƒÂ©s
 # ---------------------------
 
 def auto_params(n: int) -> Dict[str, int | float]:
-    """Renvoie des paramètres adaptés à la taille n (clients)."""
+    """Renvoie des paramÃƒÂ¨tres adaptÃƒÂ©s ÃƒÂ  la taille n (clients)."""
     params = {}
     # ALNS iterations
     if n < 80:
@@ -128,7 +128,7 @@ def auto_params(n: int) -> Dict[str, int | float]:
         params["tabu_tenure_min"], params["tabu_tenure_max"] = 14, 20
         params["pr_period"] = 800
 
-    params["sa_T0_factor"] = 0.02   # T0 ≈ 0.02 * T
+    params["sa_T0_factor"] = 0.02   # T0 Ã¢â€°Ë† 0.02 * T
     params["sa_decay"] = 0.9995
     return params
 
@@ -163,25 +163,25 @@ def gen_no_wait_friendly_instance(n: int, k: int, seed: int,
                                   coord_scale: float = 100.0,
                                   service_minmax: Tuple[int, int] = (5, 15),
                                   tw_halfwidth: float | None = None) -> Instance:
-    """Génère une instance aléatoire avec fenêtres strictes « sans attente »
-    construites autour d'un giant tour de référence.
+    """GÃƒÂ©nÃƒÂ¨re une instance alÃƒÂ©atoire avec fenÃƒÂªtres strictes Ã‚Â« sans attente Ã‚Â»
+    construites autour d'un giant tour de rÃƒÂ©fÃƒÂ©rence.
     """
-    print(f"[Gen] Génération d'une instance aléatoire (n={n}, k={k}, seed={seed})…")
+    print(f"[Gen] GÃƒÂ©nÃƒÂ©ration d'une instance alÃƒÂ©atoire (n={n}, k={k}, seed={seed})Ã¢â‚¬Â¦")
     rng = np.random.default_rng(seed)
 
-    # Coordonnées : dépôt au centre, clients uniformes
+    # CoordonnÃƒÂ©es : dÃƒÂ©pÃƒÂ´t au centre, clients uniformes
     depot = np.array([[coord_scale/2, coord_scale/2]])
     clients = rng.uniform(0, coord_scale, size=(n, 2))
-    coords = np.vstack([depot, clients])  # 0 = dépôt
+    coords = np.vstack([depot, clients])  # 0 = dÃƒÂ©pÃƒÂ´t
 
     dist, travel = build_matrices(coords)
 
-    # Services aléatoires
+    # Services alÃƒÂ©atoires
     s_min, s_max = service_minmax
     service = np.zeros(n+1, dtype=float)
     service[1:] = rng.integers(s_min, s_max+1, size=n)
 
-    # Giant tour + cumul d'arrivée prévu (départ à t=0, no‑wait)
+    # Giant tour + cumul d'arrivÃƒÂ©e prÃƒÂ©vu (dÃƒÂ©part ÃƒÂ  t=0, noÃ¢â‚¬â€˜wait)
     tour = nearest_neighbor_tour(n, dist, seed)
 
     cumul = 0.0
@@ -191,16 +191,16 @@ def gen_no_wait_friendly_instance(n: int, k: int, seed: int,
         cumul += travel[cur, j] + service[cur]
         arr_time[j] = cumul
         cur = j
-    cumul += travel[cur, 0] + service[cur]  # retour sur dépôt (info pour échelle de temps)
+    cumul += travel[cur, 0] + service[cur]  # retour sur dÃƒÂ©pÃƒÂ´t (info pour ÃƒÂ©chelle de temps)
 
-    # Fenêtres autour des temps d'arrivée de référence
+    # FenÃƒÂªtres autour des temps d'arrivÃƒÂ©e de rÃƒÂ©fÃƒÂ©rence
     if tw_halfwidth is None:
-        tw_halfwidth = max(15.0, 0.04 * cumul)  # ~4% du tour, borné à 15
+        tw_halfwidth = max(15.0, 0.04 * cumul)  # ~4% du tour, bornÃƒÂ© ÃƒÂ  15
 
     tw_a = np.zeros(n+1, dtype=float)
     tw_b = np.zeros(n+1, dtype=float)
     tw_a[0] = 0.0
-    tw_b[0] = 1e9  # dépôt large
+    tw_b[0] = 1e9  # dÃƒÂ©pÃƒÂ´t large
 
     jitter = rng.uniform(-0.25, 0.25, size=n)  # petite variation
     for idx, j in enumerate(tour, start=1):
@@ -208,17 +208,17 @@ def gen_no_wait_friendly_instance(n: int, k: int, seed: int,
         tw_a[j] = max(0.0, center - tw_halfwidth)
         tw_b[j] = center + tw_halfwidth
 
-    print(f"[Gen] Instance prête. Largeur moyenne TW ≈ {2*tw_halfwidth:.1f}")
+    print(f"[Gen] Instance prÃƒÂªte. Largeur moyenne TW Ã¢â€°Ë† {2*tw_halfwidth:.1f}")
     return Instance(n=n, k=k, coords=coords, service=service,
                     tw_a=tw_a, tw_b=tw_b, dist=dist, travel=travel)
 
 # ===========================
-#  Évaluation & Faisabilité
+#  Ãƒâ€°valuation & FaisabilitÃƒÂ©
 # ===========================
 
 def eval_route_no_wait(route: List[int], inst: Instance) -> Tuple[bool, Tuple[float, float], float, float]:
-    """Évalue une route (sans dépôt) **sans attente**.
-    Renvoie : feasible, (L,U) intervalle de départ, t_retour, distance.
+    """Ãƒâ€°value une route (sans dÃƒÂ©pÃƒÂ´t) **sans attente**.
+    Renvoie : feasible, (L,U) intervalle de dÃƒÂ©part, t_retour, distance.
     """
     if not route:
         return True, (0.0, 1e9), 0.0, 0.0
@@ -236,7 +236,7 @@ def eval_route_no_wait(route: List[int], inst: Instance) -> Tuple[bool, Tuple[fl
         U = min(U, inst.tw_b[j] - cumul)
         dist_sum += inst.dist[i, j]
 
-    # retour dépôt
+    # retour dÃƒÂ©pÃƒÂ´t
     i_last = seq[-2]
     cumul_ret = cumul + inst.travel[i_last, 0] + inst.service[i_last]
     dist_sum += inst.dist[i_last, 0]
@@ -244,13 +244,13 @@ def eval_route_no_wait(route: List[int], inst: Instance) -> Tuple[bool, Tuple[fl
     feasible = L <= U
     if not feasible:
         return False, (L, U), math.inf, dist_sum
-    s_depart = max(0.0, L)  # partir au plus tôt pour minimiser le retour
+    s_depart = max(0.0, L)  # partir au plus tÃƒÂ´t pour minimiser le retour
     t_ret = s_depart + cumul_ret
     return True, (L, U), t_ret, dist_sum
 
 
 def eval_route_wait(route: List[int], inst: Instance) -> Tuple[bool, Tuple[float, float], float, float]:
-    """Évalue une route **avec attente autorisée**. Retourne (feasible, (0, +inf), t_retour, distance)."""
+    """Ãƒâ€°value une route **avec attente autorisÃƒÂ©e**. Retourne (feasible, (0, +inf), t_retour, distance)."""
     if not route:
         return True, (0.0, 1e9), 0.0, 0.0
     seq = [0] + route + [0]
@@ -268,7 +268,7 @@ def eval_route_wait(route: List[int], inst: Instance) -> Tuple[bool, Tuple[float
 
 
 def eval_route_wait_collect(route: List[int], inst: Instance) -> Tuple[bool, float, float, List[int]]:
-    """Version wait qui **collecte** les clients où une attente > 0 a été nécessaire.
+    """Version wait qui **collecte** les clients oÃƒÂ¹ une attente > 0 a ÃƒÂ©tÃƒÂ© nÃƒÂ©cessaire.
     Retourne (feasible, t_ret, dist, wait_points)."""
     if not route:
         return True, 0.0, 0.0, []
@@ -289,8 +289,8 @@ def eval_route_wait_collect(route: List[int], inst: Instance) -> Tuple[bool, flo
 
 
 def eval_route_jit(route: List[int], inst: Instance) -> Tuple[bool, Tuple[float, float], float, float]:
-    """Essayez **no‑wait** d'abord; si infaisable, retentez en **wait** et logguez les clients
-    où une attente a vraiment été nécessaire. N'utilise l'attente que si obligatoire."""
+    """Essayez **noÃ¢â‚¬â€˜wait** d'abord; si infaisable, retentez en **wait** et logguez les clients
+    oÃƒÂ¹ une attente a vraiment ÃƒÂ©tÃƒÂ© nÃƒÂ©cessaire. N'utilise l'attente que si obligatoire."""
     global JIT_ACTIVATIONS
     feas, LU, tret, dist_sum = eval_route_no_wait(route, inst)
     if feas:
@@ -305,18 +305,18 @@ def eval_route_jit(route: List[int], inst: Instance) -> Tuple[bool, Tuple[float,
                 JIT_WAIT_CLIENTS.add(j)
                 newly_logged += 1
         if JIT_ACTIVATIONS <= JIT_PRINT_LIMIT and newly_logged > 0:
-            print(f"[JIT‑WAIT] Attente appliquée pour client(s) {sorted(waited_nodes)} (fallback local)")
-        # En mode wait, pas d'intervalle [L,U] significatif → renvoyer (0,+inf)
+            print(f"[JITÃ¢â‚¬â€˜WAIT] Attente appliquÃƒÂ©e pour client(s) {sorted(waited_nodes)} (fallback local)")
+        # En mode wait, pas d'intervalle [L,U] significatif Ã¢â€ â€™ renvoyer (0,+inf)
         return True, (0.0, 1e9), t2, d2
     return False, LU, tret, dist_sum
 
 
 def eval_route(route: List[int], inst: Instance) -> Tuple[bool, Tuple[float, float], float, float]:
-    """Wrapper : choisit la bonne évaluation selon les drapeaux globaux.
-    Priorité :
-      1) ALLOW_WAIT  → tout en wait
-      2) ALLOW_JIT_WAIT → no‑wait d'abord, puis wait seulement si nécessaire
-      3) sinon → no‑wait strict
+    """Wrapper : choisit la bonne ÃƒÂ©valuation selon les drapeaux globaux.
+    PrioritÃƒÂ© :
+      1) ALLOW_WAIT  Ã¢â€ â€™ tout en wait
+      2) ALLOW_JIT_WAIT Ã¢â€ â€™ noÃ¢â‚¬â€˜wait d'abord, puis wait seulement si nÃƒÂ©cessaire
+      3) sinon Ã¢â€ â€™ noÃ¢â‚¬â€˜wait strict
     """
     if ALLOW_WAIT:
         return eval_route_wait(route, inst)
@@ -342,9 +342,9 @@ def eval_solution_generic(routes: List[List[int]], inst: Instance) -> Solution:
 # ===========================
 
 def best_feasible_insertion(routes: List[List[int]], client: int, inst: Instance) -> Optional[Tuple[int, int, float]]:
-    """Trouve (route_idx, pos, delta_T) pour insérer 'client'.
+    """Trouve (route_idx, pos, delta_T) pour insÃƒÂ©rer 'client'.
     Renvoie None si aucune insertion faisable.
-    Tente no‑wait puis fallback JIT si activé.
+    Tente noÃ¢â‚¬â€˜wait puis fallback JIT si activÃƒÂ©.
     """
     best = None
     best_deltaT = math.inf
@@ -380,9 +380,9 @@ def best_feasible_insertion(routes: List[List[int]], client: int, inst: Instance
 
 
 def greedy_init(inst: Instance, seed: int) -> Solution:
-    """Construction gloutonne faisable (mode courant : no‑wait / wait / JIT)."""
-    mode_label = "wait" if ALLOW_WAIT else ("JIT‑wait" if ALLOW_JIT_WAIT else "no‑wait")
-    print(f"[Init] Construction gloutonne faisable ({mode_label})…")
+    """Construction gloutonne faisable (mode courant : noÃ¢â‚¬â€˜wait / wait / JIT)."""
+    mode_label = "wait" if ALLOW_WAIT else ("JITÃ¢â‚¬â€˜wait" if ALLOW_JIT_WAIT else "noÃ¢â‚¬â€˜wait")
+    print(f"[Init] Construction gloutonne faisable ({mode_label})Ã¢â‚¬Â¦")
     rng = random.Random(seed)
     routes = [[] for _ in range(inst.k)]
     unassigned = list(range(1, inst.n+1))
@@ -391,7 +391,7 @@ def greedy_init(inst: Instance, seed: int) -> Solution:
     for c in unassigned:
         ins = best_feasible_insertion(routes, c, inst)
         if ins is None:
-            # fallback : essayer toutes les positions avec JIT forcé en dernier recours
+            # fallback : essayer toutes les positions avec JIT forcÃƒÂ© en dernier recours
             saved_flag = ALLOW_JIT_WAIT
             try:
                 globals()["ALLOW_JIT_WAIT"] = True
@@ -408,12 +408,12 @@ def greedy_init(inst: Instance, seed: int) -> Solution:
                 if best_local is not None:
                     ridx, pos = best_local
                     routes[ridx] = routes[ridx][:pos] + [c] + routes[ridx][pos:]
-                    print(f"[Init] JIT‑WAIT nécessaire pour insérer le client {c}.")
+                    print(f"[Init] JITÃ¢â‚¬â€˜WAIT nÃƒÂ©cessaire pour insÃƒÂ©rer le client {c}.")
                     continue
             finally:
                 globals()["ALLOW_JIT_WAIT"] = saved_flag
             # si vraiment impossible, on abandonne
-            print(f"[Init] ⚠️ impossible d'insérer le client {c} même avec JIT‑WAIT.")
+            print(f"[Init] Ã¢Å¡Â Ã¯Â¸Â impossible d'insÃƒÂ©rer le client {c} mÃƒÂªme avec JITÃ¢â‚¬â€˜WAIT.")
             return Solution(routes=routes, T_ret=math.inf, D_tot=math.inf, feasible=False, meta={})
         else:
             ridx, pos, _ = ins
@@ -429,17 +429,17 @@ def greedy_init(inst: Instance, seed: int) -> Solution:
 # ===========================
 
 def _progress_start(total: int, desc: str):
-    """Crée une barre tqdm si dispo, sinon None (fallback console)."""
+    """CrÃƒÂ©e une barre tqdm si dispo, sinon None (fallback console)."""
     if _HAS_TQDM:
         return tqdm(total=total, desc=desc, ncols=80, leave=False, mininterval=0.2)
     return None
 
 # ===========================
-#  ALNS — Phase A (min T)
+#  ALNS Ã¢â‚¬â€ Phase A (min T)
 # ===========================
 
 def shaw_relatedness(i: int, j: int, inst: Instance, alpha_d=1.0, alpha_t=1.0) -> float:
-    # Similarité proximité géo + proximité center TW
+    # SimilaritÃƒÂ© proximitÃƒÂ© gÃƒÂ©o + proximitÃƒÂ© center TW
     d = inst.dist[i, j]
     ci = 0.5 * (inst.tw_a[i] + inst.tw_b[i])
     cj = 0.5 * (inst.tw_a[j] + inst.tw_b[j])
@@ -452,7 +452,7 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
     best = cur
 
     if not cur.feasible:
-        print("[ALNS] ⚠️ Solution initiale infaisable — ajustez la génération TW ou k.")
+        print("[ALNS] Ã¢Å¡Â Ã¯Â¸Â Solution initiale infaisable Ã¢â‚¬â€ ajustez la gÃƒÂ©nÃƒÂ©ration TW ou k.")
         return cur
 
     iters = int(params["alns_iters"])  
@@ -460,7 +460,7 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
     remove_min = int(params["remove_pct_min"]) 
     remove_max = int(params["remove_pct_max"]) 
 
-    # Pré‑calcul k-nearest (réservé, pas indispensable ici)
+    # PrÃƒÂ©Ã¢â‚¬â€˜calcul k-nearest (rÃƒÂ©servÃƒÂ©, pas indispensable ici)
     _ = [list(np.argsort(inst.dist[i])[:k_nearest]) for i in range(inst.n+1)]
 
     # SA acceptance
@@ -468,7 +468,7 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
     temp = T0
     decay = float(params["sa_decay"]) 
 
-    print(f"[ALNS] Démarrage: iters={iters}, remove%={remove_min}–{remove_max}, k-nearest={k_nearest}, T0≈{T0:.3f}")
+    print(f"[ALNS] DÃƒÂ©marrage: iters={iters}, remove%={remove_min}Ã¢â‚¬â€œ{remove_max}, k-nearest={k_nearest}, T0Ã¢â€°Ë†{T0:.3f}")
 
     pbar = _progress_start(iters, "ALNS Phase A")
     t_start = time.time()
@@ -567,7 +567,7 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
             if cand.T_ret < best.T_ret - 1e-9 or (abs(cand.T_ret - best.T_ret) <= 1e-9 and cand.D_tot < best.D_tot):
                 best = cand
                 if verbose and not _HAS_TQDM:
-                    print(f"\n[ALNS] ✓ it={it}: nouveau best T={best.T_ret:.2f} D={best.D_tot:.2f}")
+                    print(f"\n[ALNS] Ã¢Å“â€œ it={it}: nouveau best T={best.T_ret:.2f} D={best.D_tot:.2f}")
         temp *= decay
 
         # update loader
@@ -588,11 +588,11 @@ def alns_phase_A_minT(inst: Instance, seed: int, params: Dict[str, float | int],
         print()  # retour ligne pour le loader console
 
     best.meta.update({"phase": "A", "iters": iters})
-    print(f"[ALNS] Terminé. Best T={best.T_ret:.2f}, D={best.D_tot:.2f}")
+    print(f"[ALNS] TerminÃƒÂ©. Best T={best.T_ret:.2f}, D={best.D_tot:.2f}")
     return best
 
 # ===========================
-#  Tabu — Phase B (min D | T≤T*)
+#  Tabu Ã¢â‚¬â€ Phase B (min D | TÃ¢â€°Â¤T*)
 # ===========================
 
 def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | int], seed: int, verbose=True) -> Solution:
@@ -625,7 +625,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
             D += dist_r
         return feas_all, T, D
 
-    print(f"[Tabu] Démarrage polishing distance avec contrainte T ≤ {T_star:.2f}…")
+    print(f"[Tabu] DÃƒÂ©marrage polishing distance avec contrainte T Ã¢â€°Â¤ {T_star:.2f}Ã¢â‚¬Â¦")
 
     pbar = _progress_start(steps, "Tabu Phase B")
     t_start = time.time()
@@ -635,7 +635,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
         best_D = math.inf
         best_move = None
 
-        # Génère un petit voisinage : relocate 1-client, swap 1–1, 2-opt* inter-route
+        # GÃƒÂ©nÃƒÂ¨re un petit voisinage : relocate 1-client, swap 1Ã¢â‚¬â€œ1, 2-opt* inter-route
         routes = cur.routes
         k_routes = len(routes)
 
@@ -665,7 +665,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
                             best_nbr = new_routes
                             best_move = ("relocate", key)
 
-        # Swap 1–1
+        # Swap 1Ã¢â‚¬â€œ1
         for ra in range(k_routes):
             rA = routes[ra]
             for rb in range(ra+1, k_routes):
@@ -689,7 +689,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
                             best_nbr = new_routes
                             best_move = ("swap", (ca, prev_a, cb, prev_b))
 
-        # 2-opt* inter-route (échanges de suffixes)
+        # 2-opt* inter-route (ÃƒÂ©changes de suffixes)
         for ra in range(k_routes):
             rA = routes[ra]
             for rb in range(ra+1, k_routes):
@@ -723,7 +723,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
 
         # Appliquer meilleur voisin
         cur = eval_solution_generic(best_nbr, inst)
-        # Mettre à jour TABU
+        # Mettre ÃƒÂ  jour TABU
         if best_move[0] == "relocate":
             add_tabu(best_move[1], it)
         elif best_move[0] == "swap":
@@ -734,7 +734,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
         if cur.D_tot + 1e-9 < best.D_tot:
             best = cur
             if verbose and not _HAS_TQDM:
-                print(f"\n[Tabu] ✓ it={it}: nouveau best D={best.D_tot:.2f} (T={best.T_ret:.2f})")
+                print(f"\n[Tabu] Ã¢Å“â€œ it={it}: nouveau best D={best.D_tot:.2f} (T={best.T_ret:.2f})")
 
         # update loader
         if _HAS_TQDM and pbar is not None:
@@ -754,7 +754,7 @@ def tabu_phase_B_minD(inst: Instance, solA: Solution, params: Dict[str, float | 
         print()
 
     best.meta.update({"phase": "B", "steps": steps, "T_star": T_star})
-    print(f"[Tabu] Terminé. D*={best.D_tot:.2f} sous T≤{T_star:.2f}")
+    print(f"[Tabu] TerminÃƒÂ©. D*={best.D_tot:.2f} sous TÃ¢â€°Â¤{T_star:.2f}")
     return best
 
 # ===========================
@@ -765,7 +765,7 @@ def plot_solution(inst: Instance, sol: Solution, title: str = "Solution"):
     colors = plt.cm.get_cmap('tab20', len(sol.routes))
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.scatter(inst.coords[1:,0], inst.coords[1:,1], s=30, label="Clients")
-    ax.scatter(inst.coords[0,0], inst.coords[0,1], s=120, marker='*', label="Dépôt")
+    ax.scatter(inst.coords[0,0], inst.coords[0,1], s=120, marker='*', label="DÃƒÂ©pÃƒÂ´t")
     for idx, r in enumerate(sol.routes):
         x = [inst.coords[0,0]] + [inst.coords[i,0] for i in r] + [inst.coords[0,0]]
         y = [inst.coords[0,1]] + [inst.coords[i,1] for i in r] + [inst.coords[0,1]]
@@ -777,7 +777,7 @@ def plot_solution(inst: Instance, sol: Solution, title: str = "Solution"):
 
 
 def animate_solution(inst: Instance, sol: Solution, interval_ms: int = 60):
-    # Prépare les trajectoires et les temps
+    # PrÃƒÂ©pare les trajectoires et les temps
     routes = sol.routes
     paths = []  # liste de (points_xy, times)
     T_max = 0.0
@@ -805,7 +805,7 @@ def animate_solution(inst: Instance, sol: Solution, interval_ms: int = 60):
 
     fig, ax = plt.subplots(figsize=(8,8))
     ax.scatter(inst.coords[1:,0], inst.coords[1:,1], s=30, label="Clients")
-    ax.scatter(inst.coords[0,0], inst.coords[0,1], s=120, marker='*', label="Dépôt")
+    ax.scatter(inst.coords[0,0], inst.coords[0,1], s=120, marker='*', label="DÃƒÂ©pÃƒÂ´t")
     ax.legend(loc='upper right')
     ax.grid(True)
 
@@ -816,7 +816,7 @@ def animate_solution(inst: Instance, sol: Solution, interval_ms: int = 60):
         y = [inst.coords[i,1] for i in seq]
         ax.plot(x, y, lw=0.8, alpha=0.3)
 
-    # marqueurs mobiles par véhicule
+    # marqueurs mobiles par vÃƒÂ©hicule
     artists = []
     for _ in routes:
         (pt,) = ax.plot([], [], 'o', ms=8)
@@ -876,43 +876,43 @@ def run_solve(n_clients: int, k_trucks: int, seed: int,
     JIT_WAIT_CLIENTS.clear(); JIT_ACTIVATIONS = 0
 
     mode_str = (
-        "attente autorisée" if ALLOW_WAIT else (
-        "sans attente (JIT‑WAIT activé si nécessaire)" if ALLOW_JIT_WAIT else
+        "attente autorisÃƒÂ©e" if ALLOW_WAIT else (
+        "sans attente (JITÃ¢â‚¬â€˜WAIT activÃƒÂ© si nÃƒÂ©cessaire)" if ALLOW_JIT_WAIT else
         "sans attente (strict)"))
     print(f"[Run] Mode : {mode_str}")
 
     inst = gen_no_wait_friendly_instance(n_clients, k_trucks, seed)
     params = auto_params(n_clients)
 
-    print("[Run] Phase A : recherche d'une solution avec makespan minimal…")
+    print("[Run] Phase A : recherche d'une solution avec makespan minimalÃ¢â‚¬Â¦")
     solA = alns_phase_A_minT(inst, seed=seed, params=params, verbose=verbose)
 
     if not solA.feasible or math.isinf(solA.T_ret):
-        print("[Run] ✗ Échec Phase A (infaisable). Arrêt.")
+        print("[Run] Ã¢Å“â€” Ãƒâ€°chec Phase A (infaisable). ArrÃƒÂªt.")
         return {
             "n": n_clients, "k": k_trucks, "seed": seed,
             "feasible": False
         }
 
-    print("[Run] Phase B : optimisation distance sous T ≤ T*…")
+    print("[Run] Phase B : optimisation distance sous T Ã¢â€°Â¤ T*Ã¢â‚¬Â¦")
     solB = tabu_phase_B_minD(inst, solA, params=params, seed=seed+1, verbose=verbose)
 
     tf = time.time()
     elapsed = (tf - t0) * 1000.0
 
-    # Pas de gap VRPLIB pour les instances aléatoires → N/A
-    print("[Run] ✅ Solution finale trouvée.")
-    print(f"      → Clients={n_clients}, Camions={k_trucks}, Seed={seed}")
-    print(f"      → Makespan T*={solB.T_ret:.2f}")
-    print(f"      → Distance D={solB.D_tot:.2f}")
-    print(f"      → Gap = N/A (instances aléatoires)")
+    # Pas de gap VRPLIB pour les instances alÃƒÂ©atoires Ã¢â€ â€™ N/A
+    print("[Run] Ã¢Å“â€¦ Solution finale trouvÃƒÂ©e.")
+    print(f"      Ã¢â€ â€™ Clients={n_clients}, Camions={k_trucks}, Seed={seed}")
+    print(f"      Ã¢â€ â€™ Makespan T*={solB.T_ret:.2f}")
+    print(f"      Ã¢â€ â€™ Distance D={solB.D_tot:.2f}")
+    print(f"      Ã¢â€ â€™ Gap = N/A (instances alÃƒÂ©atoires)")
     if JIT_WAIT_CLIENTS:
-        print(f"      → JIT‑WAIT appliqué pour client(s) : {sorted(JIT_WAIT_CLIENTS)} (fallback local uniquement)")
+        print(f"      Ã¢â€ â€™ JITÃ¢â‚¬â€˜WAIT appliquÃƒÂ© pour client(s) : {sorted(JIT_WAIT_CLIENTS)} (fallback local uniquement)")
     print()
 
-    plot_solution(inst, solB, title=f"VRPTW {'wait' if ALLOW_WAIT else ('JIT‑wait' if ALLOW_JIT_WAIT else 'no‑wait')} — T*={solB.T_ret:.1f}, D={solB.D_tot:.1f}")
+    plot_solution(inst, solB, title=f"VRPTW {'wait' if ALLOW_WAIT else ('JIT-wait' if ALLOW_JIT_WAIT else 'no-wait')} - T*={solB.T_ret:.1f}, D={solB.D_tot:.1f}")
     if animate:
-        print("[Run] Animation des tournées (camions en mouvement)…")
+        print("[Run] Animation des tournÃƒÂ©es (camions en mouvement)Ã¢â‚¬Â¦")
         animate_solution(inst, solB)
 
     return {
@@ -932,7 +932,7 @@ def run_solve(n_clients: int, k_trucks: int, seed: int,
 # ===========================
 
 def _self_test():
-    print("\n=== SELF-TEST: démarrage ===")
+    print("\n=== SELF-TEST: dÃƒÂ©marrage ===")
     global ALLOW_WAIT, ALLOW_JIT_WAIT
 
     # 1) Petit no-wait strict
@@ -942,7 +942,7 @@ def _self_test():
     assert solA.feasible and math.isfinite(solA.T_ret)
     solB = tabu_phase_B_minD(inst, solA, params=auto_params(inst.n), seed=2, verbose=False)
     assert solB.feasible and math.isfinite(solB.D_tot)
-    print("[TEST] no-wait strict OK — T*={:.2f}, D={:.2f}".format(solB.T_ret, solB.D_tot))
+    print("[TEST] no-wait strict OK Ã¢â‚¬â€ T*={:.2f}, D={:.2f}".format(solB.T_ret, solB.D_tot))
 
     # 2) Mode wait
     ALLOW_WAIT, ALLOW_JIT_WAIT = True, False
@@ -951,15 +951,15 @@ def _self_test():
     assert solA.feasible and math.isfinite(solA.T_ret)
     solB = tabu_phase_B_minD(inst, solA, params=auto_params(inst.n), seed=3, verbose=False)
     assert solB.feasible and math.isfinite(solB.D_tot)
-    print("[TEST] wait OK — T*={:.2f}, D={:.2f}".format(solB.T_ret, solB.D_tot))
+    print("[TEST] wait OK Ã¢â‚¬â€ T*={:.2f}, D={:.2f}".format(solB.T_ret, solB.D_tot))
 
-    # 3) JIT‑WAIT (fallback local)
+    # 3) JITÃ¢â‚¬â€˜WAIT (fallback local)
     ALLOW_WAIT, ALLOW_JIT_WAIT = False, True
     inst = gen_no_wait_friendly_instance(50, 5, 3)
     solA = alns_phase_A_minT(inst, seed=3, params=auto_params(inst.n), verbose=False)
     solB = tabu_phase_B_minD(inst, solA, params=auto_params(inst.n), seed=4, verbose=False)
     assert solB.feasible
-    print("[TEST] JIT‑WAIT OK — T*={:.2f}, D={:.2f}".format(solB.T_ret, solB.D_tot))
+    print("[TEST] JITÃ¢â‚¬â€˜WAIT OK Ã¢â‚¬â€ T*={:.2f}, D={:.2f}".format(solB.T_ret, solB.D_tot))
 
     print("=== SELF-TEST: OK ===\n")
 
@@ -973,18 +973,18 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        print("=== Résolveur VRPTW (no‑wait / wait / JIT‑wait) — ALNS + Tabu ===")
+        print("=== Solveur VRPTW (no-wait / wait / JIT-wait) - ALNS + Tabu ===")
         k = int(input("Nombre de camions k : "))
-        n = int(input("Nombre de clients n (10–2000) : "))
-        seed = int(input("Seed de génération : "))
-        aw_in = input("Autoriser l'attente globale ? (o/n) : ").strip().lower()
-        allow_wait = aw_in in ("o", "oui", "y", "yes")
-        jit_in = input("Activer le JIT‑WAIT (attente seulement si obligatoire) ? (o/n) : ").strip().lower()
+        n = int(input("Nombre de clients n (10..2000) : "))
+        seed = int(input("Seed de generation : "))
+        jit_in = input("Activer le JIT-WAIT (attente seulement si obligatoire) ? (o/n) : ").strip().lower()
+        allow_wait = False
         jit_wait_if_needed = jit_in in ("o", "oui", "y", "yes")
     except Exception:
-        print("Entrées invalides, on prend k=5, n=100, seed=42 par défaut.")
+        print("EntrÃƒÂ©es invalides, on prend k=5, n=100, seed=42 par dÃƒÂ©faut.")
         k, n, seed = 5, 100, 42
         allow_wait = False
         jit_wait_if_needed = True
 
     _ = run_solve(n_clients=n, k_trucks=k, seed=seed, allow_wait=allow_wait, jit_wait_if_needed=jit_wait_if_needed, animate=True)
+
