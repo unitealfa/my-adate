@@ -178,7 +178,20 @@ def main():
     data, best = solve(str(dataset_path), k=k, shift_duration=args.shift_duration, time_limit_s=args.time_limit)
 
     # sorties
-    print(f"Objective: {best.cost:.3f} | Dist: {best.dist:.3f} | TW_violation: {best.time_warp:.3f} | LastReturn: {best.last_return:.3f}")
+    last_return = best.last_return
+    gap = None
+    if args.shift_duration is not None:
+        gap = args.shift_duration - last_return
+
+    msg = (
+        f"Objective: {best.cost:.3f}"
+        f" | Dist: {best.dist:.3f}"
+        f" | TW_violation: {best.time_warp:.3f}"
+        f" | Last truck duration: {last_return:.3f}"
+    )
+    if gap is not None:
+        msg += f" | Gap to shift: {gap:.3f}"
+    print(msg)
     png = out_dir / "routes.png"
     plot_routes(data, best, str(png))
     print(f"Plot écrit: {png}")
