@@ -9,6 +9,7 @@ from typing import Dict
 from .data import Depot, Client, save_dataset
 from .solver import solve
 from .viz import plot_routes
+from .schedule import forward_schedule
 
 DEFAULT_GENERATED_DIR = Path("data/generated")
 INDEX_FILE = DEFAULT_GENERATED_DIR / "index.json"
@@ -119,7 +120,7 @@ def choose_saved_dataset(saved: Dict[str, str]) -> Path | None:
         print("Numéro hors plage.")
 
 
-def interactive_setup() -> tuple[int, Path]:
+def interactive_setup() -> tuple[int, Path, int | None]:
     print("=== Assistant VRPTW ===")
     k = prompt_int("Nombre de camions disponibles : ")
     saved = load_saved_datasets()
@@ -147,17 +148,17 @@ def interactive_setup() -> tuple[int, Path]:
                     saved[name] = str(dataset_path)
                     print(f"Scénario enregistré sous le nom '{name}'.")
                     break
-            return k, dataset_path
+            return k, dataset_path, seed
         if choice == "2":
             path = Path(input("Chemin du fichier JSON : ").strip())
             if path.exists():
-                return k, path
+                return k, path, None
             print("Fichier introuvable, merci de réessayer.")
             continue
         if choice == "3":
             dataset_path = choose_saved_dataset(saved)
             if dataset_path is not None:
-                return k, dataset_path
+                return k, dataset_path, None
             continue
         print("Choix invalide, merci de sélectionner 1, 2 ou 3.")
 
@@ -167,13 +168,15 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.interactive:
-        k, dataset_path = interactive_setup()
+        k, dataset_path, seed_used = interactive_setup()
     else:
         k = args.k
         if args.data:
             dataset_path = Path(args.data)
+            seed_used = None
         else:
             dataset_path = generate_random(args.n_clients, args.seed, DEFAULT_GENERATED_DIR)
+            seed_used = args.seed
 
     data, best = solve(str(dataset_path), k=k, shift_duration=args.shift_duration, time_limit_s=args.time_limit)
 
@@ -182,6 +185,12 @@ def main():
     gap = None
     if args.shift_duration is not None:
         gap = args.shift_duration - last_return
+        gap_pct = (gap / args.shift_duration) * 100 if args.shift_duration else None
+    else:
+        gap_pct = None
+
+    print(f"Nombre de clients : {data.n_clients}")
+    print(f"Graine utilisée : {seed_used if seed_used is not None else 'N/A'}")
 
     msg = (
         f"Objective: {best.cost:.3f}"
@@ -191,9 +200,22 @@ def main():
     )
     if gap is not None:
         msg += f" | Gap to shift: {gap:.3f}"
+        if gap_pct is not None:
+            msg += f" ({gap_pct:.2f}%)"
     print(msg)
+    if best.routes:
+        route_durations = []
+        for idx, route in enumerate(best.routes, start=1):
+            _, _, _, _, duration = forward_schedule(route, data)
+            route_durations.append((idx, duration, route))
+        longest_idx, longest_duration, longest_route = max(route_durations, key=lambda x: x[1])
+        readable_route = " -> ".join(str(node) for node in longest_route)
+        print(f"Camion avec la tournée la plus longue : #{longest_idx} ({longest_duration:.3f} de durée)")
+        print(f"Itinéraire : {readable_route}")
+    else:
+        print("Aucune tournée générée.")
     png = out_dir / "routes.png"
-    plot_routes(data, best, str(png))
+    plot_routes(data, best, str(png), show=True)
     print(f"Plot écrit: {png}")
 
 if __name__ == "__main__":
