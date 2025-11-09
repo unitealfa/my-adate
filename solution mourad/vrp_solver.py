@@ -1032,12 +1032,25 @@ def solve_file(path: str,
 
     validate_solution(inst, routes)
 
+    # Compute the duration of the longest route (arrival time back to depot)
+    max_route_time = 0.0
+    for r in routes:
+        ok, arr = recompute_arrivals(inst, r)
+        if ok and arr:
+            rt = arr[-1]
+        else:
+            # Fallback to distance-based duration if arrivals are unavailable
+            rt = route_cost(inst.dist, np.array(r, dtype=np.int32))
+        if rt > max_route_time:
+            max_route_time = rt
+
     lines = []
     for i, r in enumerate(routes, 1):
         lines.append(f"Route #{i}: " + " ".join(str(x) for x in r[1:-1]))
     cost = total_cost(inst, routes)
     lines.append(f"Cost {int(round(cost))}")
     lines.append(f"Time {elapsed:.2f}s")
+    lines.append(f"Temps du plus long trajet {max_route_time:.2f}s")
 
     ref = find_sol_reference_cost(inst, inst_path)
     if ref and ref > 0:
@@ -1162,5 +1175,14 @@ def main():
             traceback.print_exc()
         print()
 
+def maybe_wait_for_exit() -> None:
+    # When run from a double-clicked batch/script, keep the console open after printing results.
+    if sys.stdin and sys.stdin.isatty():
+        try:
+            input("\nAppuyez sur Entrée pour fermer...")
+        except EOFError:
+            pass
+
 if __name__ == '__main__':
     main()
+    maybe_wait_for_exit()
