@@ -2,30 +2,38 @@
 # -*- coding: utf-8 -*-
 """
 VRP / VRPTW solver (HGS + Split(TW) + RVND + ALNS, Numba-accelerated when available)
-- Reads CVRPLIB .vrp (no TW) and Solomon .txt (with TW)
-- Supports k identical vehicles, capacity, and time windows (waiting allowed, no service outside window)
-- Uses EUC_2D rounded distances for CVRPLIB (matches official costs)
-- Interactive picker: choose files from ./data if no CLI args
+- Lit CVRPLIB .vrp (sans TW) et Solomon .txt (avec TW)
+- Ne JAMAIS utiliser .sol pour construire : .sol uniquement pour le gap
+- Distances: CVRP -> EUC_2D arrondies ; Solomon -> Euclidiennes
+- Menu interactif : choix séparé des fichiers Avec TW (.txt) et Sans TW (.vrp)
+- Auto-tuning des paramètres (-I, -P, -S, --fast, --nnk, --init) par instance
+- Accélération : parallélisation CPU (joblib) pour seeds et offspring (HGS)
 
-Suggested params for competitive results (small/medium):
-    python vrp_hgs_pro.py data/A-n32-k5.vrp -I 400 -P 48 -S 1
-Large instances (~1000 customers):
-    python vrp_hgs_pro.py data/X-n101-k25.vrp -I 800 -P 64 -S 1
+Lancer simplement:
+    python vrp_hgs_menu_gap.py
 
-Outputs:
-    Route #i: <sequence>
-    Cost <total>
-    gap <xx.xx%>   (if best known is provided)
-
-Author: you
+Exemples overrides (facultatifs):
+    python vrp_hgs_menu_gap.py data/A-n32-k5.vrp -I 400 -P 48 -S 1
+    python vrp_hgs_menu_gap.py --fast --nnk 20 --init regret -S 2
 """
 
-import math, re, sys, argparse, random, time
+import math, re, sys, argparse, random, time, hashlib, os
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 import numpy as np
+
+# --- joblib (parallèle) ---
+try:
+    from joblib import Parallel, delayed
+    HAVE_JOBLIB = True
+except Exception:
+    HAVE_JOBLIB = False
+    def Parallel(*args, **kwargs):
+        raise RuntimeError("joblib non disponible")
+    def delayed(f):
+        return f
 
 try:
     from numba import njit
@@ -52,12 +60,8 @@ class Instance:
     dist: np.ndarray
     has_tw: bool
 
-# ------------------------------ Nearest Neighbors (granular) ------------------------------
+# ------------------------------ NN (granular) ------------------------------
 def build_nn(dist: np.ndarray, k: int) -> list[np.ndarray]:
-    """
-    Pour chaque noeud u, calcule les k plus proches voisins (hors lui-même et hors dépôt 0).
-    Retourne une liste de tableaux d'indices.
-    """
     n = dist.shape[0]
     order = np.argsort(dist, axis=1)
     nn: list[np.ndarray] = []
@@ -66,49 +70,10 @@ def build_nn(dist: np.ndarray, k: int) -> list[np.ndarray]:
         nn.append(np.array(cand, dtype=np.int32))
     return nn
 
-# ------------------------------ Best-known loader (optional) ------------------------------
-def load_best_known(path: Optional[str]) -> dict:
-    """
-    Charge un mapping {nom_instance: best_cost} depuis:
-      - JSON (dict)  ou
-      - CSV / texte lignes:  name,cost   ou   name cost
-    Tout est optionnel: si le fichier n'existe pas / invalide -> {}.
-    """
-    if not path:
-        return {}
-    p = Path(path)
-    if not p.exists():
-        return {}
-    txt = p.read_text(encoding='utf-8', errors='ignore').strip()
-    # Essai JSON
-    try:
-        import json
-        obj = json.loads(txt)
-        if isinstance(obj, dict):
-            return {str(k): float(v) for k, v in obj.items()}
-    except Exception:
-        pass
-    # Fallback CSV / lignes "name cost"
-    m = {}
-    for ln in txt.splitlines():
-        ln = ln.strip()
-        if not ln or ln.startswith('#'):
-            continue
-        parts = re.split(r'[\,\s;]+', ln)
-        if len(parts) >= 2:
-            name = parts[0]
-            try:
-                val = float(parts[1])
-            except Exception:
-                continue
-            m[name] = val
-    return m
-
 # ------------------------------ Parsing ------------------------------
 def parse_solomon_txt(path: str) -> Instance:
     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
         lines = [ln.rstrip('\n') for ln in f]
-    # Clean and keep non-empty
     lines = [ln.strip() for ln in lines if ln.strip()]
     num = cap = None
     for i, ln in enumerate(lines):
@@ -136,6 +101,7 @@ def parse_solomon_txt(path: str) -> Instance:
     n = len(data)-1
     if n <= 0:
         raise ValueError('No customers parsed from Solomon file')
+
     coords = np.zeros((n+1,2), dtype=np.float64)
     demand = np.zeros(n+1, dtype=np.float64)
     ready  = np.zeros(n+1, dtype=np.float64)
@@ -143,6 +109,8 @@ def parse_solomon_txt(path: str) -> Instance:
     service= np.zeros(n+1, dtype=np.float64)
     for cid, x, y, dem, r, d, s in data:
         coords[cid] = (x,y); demand[cid] = dem; ready[cid] = r; due[cid] = d; service[cid] = s
+
+    # Euclidienne (pas d'arrondi)
     dist = np.sqrt(((coords[:,None,:]-coords[None,:,:])**2).sum(-1))
     k = int(num) if num else n
     cap = int(cap) if cap else 10**9
@@ -162,7 +130,6 @@ def parse_cvrplib_vrp(path: str) -> Instance:
                     return parts[1].strip()
         return None
 
-    name = get_val('NAME') or Path(path).name
     cap_str = get_val('CAPACITY') or '0'
     dim_str = get_val('DIMENSION') or None
     capacity = int(re.sub(r'\D','', cap_str)) if re.search(r'\d', cap_str or '') else 0
@@ -180,7 +147,7 @@ def parse_cvrplib_vrp(path: str) -> Instance:
     if node_idx is None or dem_idx is None or dep_idx is None:
         raise ValueError('Missing required sections in .vrp (NODE_COORD_SECTION/DEMAND_SECTION/DEPOT_SECTION).')
 
-    coords_map = {}
+    coords_map: Dict[int, Tuple[float,float]] = {}
     i = node_idx + 1
     while i < len(lines) and not U[i].endswith('SECTION') and not U[i].startswith('DEPOT_SECTION') and not U[i].startswith('DEMAND_SECTION'):
         parts = re.split(r"\s+", lines[i])
@@ -188,7 +155,7 @@ def parse_cvrplib_vrp(path: str) -> Instance:
             idx = int(parts[0]); x = float(parts[1]); y = float(parts[2]); coords_map[idx] = (x,y)
         i += 1
 
-    demand_map = {}
+    demand_map: Dict[int, float] = {}
     i = dem_idx + 1
     while i < len(lines) and not U[i].startswith('DEPOT_SECTION') and not U[i].endswith('SECTION'):
         parts = re.split(r"\s+", lines[i])
@@ -226,20 +193,21 @@ def parse_cvrplib_vrp(path: str) -> Instance:
         coords2[new_idx] = coords_map.get(orig, (0.0,0.0))
         demand2[new_idx] = demand_map.get(orig, 0.0)
 
-    # EUC_2D rounded distances (official CVRPLIB convention)
+    # EUC_2D arrondies (convention CVRPLIB)
     diff = coords2[:, None, :] - coords2[None, :, :]
     dist = np.rint(np.sqrt((diff**2).sum(-1))).astype(np.float64)
 
     fname = Path(path).name
     m = re.search(r'-K(\d+)', fname, flags=re.IGNORECASE)
     if m: k = int(m.group(1))
-    else: k = math.ceil(demand2[1:].sum()/capacity) if capacity>0 else n
+    else:
+        k = math.ceil(demand2[1:].sum()/capacity) if capacity>0 else n
 
     cap = int(capacity) if capacity>0 else 10**9
     return Instance(fname, n, coords2, demand2, ready, due, service, cap, int(k), dist, False)
 
-# ------------------------------ Utilities ------------------------------
-@njit(cache=True)
+# ------------------------------ Core Utils ------------------------------
+@njit(cache=True, fastmath=True, nogil=True)
 def route_cost(dist: np.ndarray, route: np.ndarray) -> float:
     c = 0.0
     for i in range(route.shape[0]-1):
@@ -249,7 +217,14 @@ def route_cost(dist: np.ndarray, route: np.ndarray) -> float:
 def total_cost(inst: Instance, routes: List[List[int]]) -> float:
     return sum(route_cost(inst.dist, np.array(r, dtype=np.int32)) for r in routes)
 
-# recompute arrival times respecting TW and waiting; returns (feasible?, arrivals)
+def capacity_ok(inst: Instance, route: List[int]) -> bool:
+    load = 0.0
+    for c in route[1:-1]:
+        load += inst.demand[c]
+        if load > inst.capacity + 1e-9:
+            return False
+    return True
+
 def recompute_arrivals(inst: Instance, route: List[int]) -> Tuple[bool, List[float]]:
     arr = [0.0]
     for idx in range(1, len(route)):
@@ -263,35 +238,19 @@ def recompute_arrivals(inst: Instance, route: List[int]) -> Tuple[bool, List[flo
         arr.append(arr_cur)
     return True, arr
 
-# quick feasibility for capacity-only (CVRP)
-def capacity_ok(inst: Instance, route: List[int]) -> bool:
-    load = 0.0
-    for c in route[1:-1]:
-        load += inst.demand[c]
-        if load > inst.capacity + 1e-9:
-            return False
-    return True
-
 # ------------------------------ Split (DP) ------------------------------
-# Split for CVRP (no TW)
 def split_cvrp(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
     n = len(tour)
-    # Precompute cumulative demand and cumulative distances for quick evaluation
     cum_dem = np.zeros(n+1)
     for i in range(n):
         cum_dem[i+1] = cum_dem[i] + inst.demand[tour[i]]
 
-    # cost of [i..j] as a route (0 -> tour[i] ... tour[j] -> 0), capacity respected
     def route_cost_ij(i, j) -> float:
         load = cum_dem[j+1] - cum_dem[i]
-        if load > inst.capacity + 1e-9:
-            return 1e18
-        # 0 -> tour[i]
+        if load > inst.capacity + 1e-9: return 1e18
         c = inst.dist[0, tour[i]]
-        # inside
         for t in range(i, j):
             c += inst.dist[tour[t], tour[t+1]]
-        # -> 0
         c += inst.dist[tour[j], 0]
         return c
 
@@ -306,8 +265,7 @@ def split_cvrp(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
             if cnt[i]+1 <= inst.k and dp[i]+c < best:
                 best = dp[i]+c; bi = i; bc = cnt[i]+1
         dp[j] = best; prev[j] = bi; cnt[j] = bc
-    if prev[n] == -1:
-        return None
+    if prev[n] == -1: return None
     routes = []
     cur = n
     while cur > 0:
@@ -317,7 +275,6 @@ def split_cvrp(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
     routes.reverse()
     return routes
 
-# Split with TW (VRPTW)
 def split_vrptw(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
     n = len(tour)
     feas_cost = [[(False, 1e18)]*n for _ in range(n)]
@@ -335,7 +292,6 @@ def split_vrptw(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
             if arr_u < inst.ready[u]: arr_u = inst.ready[u]
             if arr_u > inst.due[u] + 1e-9: ok = False
             r.append(u); arr.append(arr_u)
-            # return to depot
             if ok:
                 depart_u = max(arr[-1], inst.ready[u]) + inst.service[u]
                 arr_dep = depart_u + inst.dist[u, 0]
@@ -343,6 +299,7 @@ def split_vrptw(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
             if ok:
                 cost = route_cost(inst.dist, np.array(r+[0], dtype=np.int32))
                 feas_cost[i][j] = (True, cost)
+
     INF = 1e18
     dp = [INF]*(n+1); prev = [-1]*(n+1); cnt = [10**9]*(n+1)
     dp[0] = 0.0; cnt[0] = 0
@@ -366,14 +323,10 @@ def split_vrptw(inst: Instance, tour: List[int]) -> Optional[List[List[int]]]:
 
 # ------------------------------ Construction ------------------------------
 def feasible_insert(inst: Instance, route: List[int], pos: int, u: int, arr_times: List[float]) -> Tuple[bool, float, List[float]]:
-    # Capacity quick check (single insertion)
     load = sum(inst.demand[c] for c in route[1:-1]) + inst.demand[u]
     if load > inst.capacity + 1e-9: return False, 1e18, []
-
     i = route[pos-1]; j = route[pos]
     delta = inst.dist[i,u] + inst.dist[u,j] - inst.dist[i,j]
-
-    # TW propagate
     new_arr = arr_times[:pos]
     new_route = route[:pos] + [u] + route[pos:]
     for idx in range(pos, len(new_route)):
@@ -389,7 +342,6 @@ def build_seed(inst: Instance) -> List[List[int]]:
     unserved = set(range(1, inst.n+1))
     routes: List[List[int]] = []
     arrivals: List[List[float]] = []
-
     while unserved:
         best = []
         for r_idx, r in enumerate(routes):
@@ -411,46 +363,37 @@ def build_seed(inst: Instance) -> List[List[int]]:
             arrivals[r_idx] = new_arr
             unserved.remove(u)
         else:
-            # open new route with an appropriate seed (early TW or far/demand for CVRP)
-            if inst.has_tw:
-                seed = min(unserved, key=lambda u: inst.ready[u])
-            else:
-                seed = max(unserved, key=lambda u: (inst.demand[u], inst.dist[0,u]))
+            seed = min(unserved, key=lambda u: inst.ready[u]) if inst.has_tw else \
+                   max(unserved, key=lambda u: (inst.demand[u], inst.dist[0,u]))
             r = [0, seed, 0]
             ok, arr = recompute_arrivals(inst, r)
             if not ok:
-                # fallback: single customer route will always be feasible here
                 arr = [0.0, max(inst.dist[0,seed], inst.ready[seed]), 0.0]
-            routes.append(r); arrivals.append(arr)
-            unserved.remove(seed)
+            routes.append(r); arrivals.append(arr); unserved.remove(seed)
     return routes
 
 def build_seed_sweep(inst: Instance) -> List[List[int]]:
-    """Construction rapide pour CVRP: tri par angle autour du dépôt + remplissage capacitaire."""
     depot = inst.coords[0]
     vec = inst.coords[1:] - depot
     ang = np.arctan2(vec[:,1], vec[:,0])
     order = np.argsort(ang) + 1
     routes: List[List[int]] = []
-    cur: List[int] = [0]
-    load = 0.0
+    cur: List[int] = [0]; load = 0.0
     for u in order:
         d = float(inst.demand[int(u)])
         if load + d <= inst.capacity + 1e-9:
             cur.append(int(u)); load += d
         else:
-            cur.append(0)
-            routes.append(cur)
+            cur.append(0); routes.append(cur)
             cur = [0, int(u)]; load = d
     cur.append(0); routes.append(cur)
     return routes
 
-# ------------------------------ RVND ------------------------------
+# ------------------------------ RVND (avec NN optionnel) ------------------------------
 def recompute_arrivals_safe(inst: Instance, r: List[int]) -> bool:
     ok, _ = recompute_arrivals(inst, r)
     return ok
 
-# Intra-route or-opt (move chains of length L = 1,2,3 inside same route)
 def or_opt_intra(inst: Instance, r: List[int]) -> Tuple[bool, List[int]]:
     if len(r) <= 4: return False, r
     base = route_cost(inst.dist, np.array(r, dtype=np.int32))
@@ -471,8 +414,6 @@ def or_opt_intra(inst: Instance, r: List[int]) -> Tuple[bool, List[int]]:
         return True, best[1]
     return False, r
 
-# Intra 2-opt
-
 def two_opt_intra(inst: Instance, r: List[int]) -> Tuple[bool, List[int]]:
     if len(r) <= 4: return False, r
     base = route_cost(inst.dist, np.array(r, dtype=np.int32))
@@ -488,8 +429,6 @@ def two_opt_intra(inst: Instance, r: List[int]) -> Tuple[bool, List[int]]:
         return True, best[1]
     return False, r
 
-# Inter relocate (move single node between routes)
-
 def relocate_inter(inst: Instance, r1: List[int], r2: List[int], nn: Optional[list[np.ndarray]] = None) -> Tuple[bool, List[int], List[int]]:
     if len(r1) <= 3: return False, r1, r2
     base = route_cost(inst.dist, np.array(r1, dtype=np.int32)) + route_cost(inst.dist, np.array(r2, dtype=np.int32))
@@ -497,8 +436,7 @@ def relocate_inter(inst: Instance, r1: List[int], r2: List[int], nn: Optional[li
     for pos_u in pos_u_list:
         u = r1[pos_u]
         remain1 = r1[:pos_u] + r1[pos_u+1:]
-        if not capacity_ok(inst, remain1):
-            continue
+        if not capacity_ok(inst, remain1): continue
         pos_ins_list = list(range(1, len(r2))); random.shuffle(pos_ins_list)
         for pos_ins in pos_ins_list:
             if nn is not None:
@@ -507,16 +445,12 @@ def relocate_inter(inst: Instance, r1: List[int], r2: List[int], nn: Optional[li
                 if (left not in allowed) and (right not in allowed):
                     continue
             nr2 = r2[:pos_ins] + [u] + r2[pos_ins:]
-            if not capacity_ok(inst, nr2):
-                continue
-            if not (recompute_arrivals_safe(inst, remain1) and recompute_arrivals_safe(inst, nr2)):
-                continue
+            if not capacity_ok(inst, nr2): continue
+            if not (recompute_arrivals_safe(inst, remain1) and recompute_arrivals_safe(inst, nr2)): continue
             c = route_cost(inst.dist, np.array(remain1, dtype=np.int32)) + route_cost(inst.dist, np.array(nr2, dtype=np.int32))
             if c < base - 1e-9:
                 return True, remain1, nr2
     return False, r1, r2
-
-# Inter swap(1,1)
 
 def swap_11(inst: Instance, r1: List[int], r2: List[int], nn: Optional[list[np.ndarray]] = None) -> Tuple[bool, List[int], List[int]]:
     if len(r1) <= 3 or len(r2) <= 3: return False, r1, r2
@@ -533,106 +467,66 @@ def swap_11(inst: Instance, r1: List[int], r2: List[int], nn: Optional[list[np.n
                     continue
             nr1 = r1[:i] + [v] + r1[i+1:]
             nr2 = r2[:j] + [u] + r2[j+1:]
-            if not (capacity_ok(inst, nr1) and capacity_ok(inst, nr2)):
-                continue
-            if not (recompute_arrivals_safe(inst, nr1) and recompute_arrivals_safe(inst, nr2)):
-                continue
+            if not (capacity_ok(inst, nr1) and capacity_ok(inst, nr2)): continue
+            if not (recompute_arrivals_safe(inst, nr1) and recompute_arrivals_safe(inst, nr2)): continue
             c = route_cost(inst.dist, np.array(nr1, dtype=np.int32)) + route_cost(inst.dist, np.array(nr2, dtype=np.int32))
             if c < base - 1e-9:
                 return True, nr1, nr2
     return False, r1, r2
-
-# Inter 2-opt* (swap suffixes between two routes)
 
 def two_opt_star(inst: Instance, r1: List[int], r2: List[int], nn: Optional[list[np.ndarray]] = None) -> Tuple[bool, List[int], List[int]]:
     if len(r1) <= 3 or len(r2) <= 3: return False, r1, r2
     base = route_cost(inst.dist, np.array(r1, dtype=np.int32)) + route_cost(inst.dist, np.array(r2, dtype=np.int32))
     cut1 = list(range(1, len(r1)-1)); random.shuffle(cut1)
     for i in cut1:
-        u = r1[i]
         cut2 = list(range(1, len(r2)-1)); random.shuffle(cut2)
         for j in cut2:
-            v = r2[j]
             if nn is not None:
+                u = r1[i]; v = r2[j]
                 close_u = set(nn[u].tolist()); close_v = set(nn[v].tolist())
                 if (v not in close_u) and (u not in close_v):
                     continue
             nr1 = r1[:i] + r2[j:]
             nr2 = r2[:j] + r1[i:]
-            if not (capacity_ok(inst, nr1) and capacity_ok(inst, nr2)):
-                continue
-            if not (recompute_arrivals_safe(inst, nr1) and recompute_arrivals_safe(inst, nr2)):
-                continue
+            if not (capacity_ok(inst, nr1) and capacity_ok(inst, nr2)): continue
+            if not (recompute_arrivals_safe(inst, nr1) and recompute_arrivals_safe(inst, nr2)): continue
             c = route_cost(inst.dist, np.array(nr1, dtype=np.int32)) + route_cost(inst.dist, np.array(nr2, dtype=np.int32))
-            if c < base - 1e-9:
-                return True, nr1, nr2
+            if c < base - 1e-9: return True, nr1, nr2
     return False, r1, r2
 
-# Full RVND over a set of neighborhoods
-
 def rvnd(inst: Instance, routes: List[List[int]], max_loops: int = 5,
-         nn: Optional[list[np.ndarray]] = None,
-         time_limit: Optional[float] = None,
-         t0: Optional[float] = None) -> List[List[int]]:
-    if not routes:
-        return routes
+         nn: Optional[list[np.ndarray]] = None) -> List[List[int]]:
+    if not routes: return routes
     loops = 0
     while loops < max_loops:
-        improved = False
-        neighborhoods = ['or', '2opt', 'relocate', 'swap', '2opt*']
-        random.shuffle(neighborhoods)
-        for nb in neighborhoods:
-            if time_limit and t0 and (time.perf_counter() - t0) > time_limit:
-                return [r for r in routes if len(r) > 2]
-            if nb == 'or':
-                for r_idx in range(len(routes)):
-                    changed, nr = or_opt_intra(inst, routes[r_idx])
-                    if changed:
-                        routes[r_idx] = nr; improved = True; break
-            elif nb == '2opt':
-                for r_idx in range(len(routes)):
-                    changed, nr = two_opt_intra(inst, routes[r_idx])
-                    if changed:
-                        routes[r_idx] = nr; improved = True; break
-            elif nb == 'relocate':
-                for a in range(len(routes)):
-                    for b in range(len(routes)):
-                        if a == b: continue
-                        changed, ra, rb = relocate_inter(inst, routes[a], routes[b], nn)
-                        if changed:
-                            routes[a], routes[b] = ra, rb; improved = True; break
-                    if improved: break
-            elif nb == 'swap':
-                for a in range(len(routes)):
-                    for b in range(len(routes)):
-                        if a == b: continue
-                        changed, ra, rb = swap_11(inst, routes[a], routes[b], nn)
-                        if changed:
-                            routes[a], routes[b] = ra, rb; improved = True; break
-                    if improved: break
-            else:  # '2opt*'
-                for a in range(len(routes)):
-                    for b in range(len(routes)):
-                        if a == b: continue
-                        changed, ra, rb = two_opt_star(inst, routes[a], routes[b], nn)
-                        if changed:
-                            routes[a], routes[b] = ra, rb; improved = True; break
-                    if improved: break
-            if improved:
-                break
-        if not improved:
-            break
+        improved_any = False
+        # Intra
+        for r_idx in range(len(routes)):
+            changed, nr = or_opt_intra(inst, routes[r_idx])
+            if changed: routes[r_idx] = nr; improved_any = True
+        for r_idx in range(len(routes)):
+            changed, nr = two_opt_intra(inst, routes[r_idx])
+            if changed: routes[r_idx] = nr; improved_any = True
+        # Inter
+        for a in range(len(routes)):
+            for b in range(len(routes)):
+                if a == b: continue
+                changed, ra, rb = relocate_inter(inst, routes[a], routes[b], nn)
+                if changed: routes[a], routes[b] = ra, rb; improved_any = True
+                changed, ra, rb = swap_11(inst, routes[a], routes[b], nn)
+                if changed: routes[a], routes[b] = ra, rb; improved_any = True
+                changed, ra, rb = two_opt_star(inst, routes[a], routes[b], nn)
+                if changed: routes[a], routes[b] = ra, rb; improved_any = True
+        if not improved_any: break
         loops += 1
     return [r for r in routes if len(r) > 2]
 
-# ------------------------------ HGS core ------------------------------
+# ------------------------------ HGS core (parallélisé) ------------------------------
 def tour_from_routes(routes: List[List[int]]) -> List[int]:
     out: List[int] = []
     for r in routes:
         out.extend(r[1:-1])
     return out
-
-# Order Crossover with safety normalization
 
 def ox_crossover(p1: List[int], p2: List[int]) -> List[int]:
     n = len(p1)
@@ -654,8 +548,6 @@ def ox_crossover(p1: List[int], p2: List[int]) -> List[int]:
         child[pos] = x
         used.add(x)
     return child
-
-# ALNS: destroy (Shaw or random) + regret repair
 
 def shaw_relatedness(inst: Instance, a: int, b: int) -> float:
     return inst.dist[a,b]
@@ -682,16 +574,12 @@ def remove_customers(routes: List[List[int]], rem: List[int]) -> List[List[int]]
         if len(nr) > 2: new.append(nr)
     return new
 
-# regret-k repair (k=2)
-
 def regret_repair(inst: Instance, routes: List[List[int]], removed: List[int]) -> List[List[int]]:
     if not routes: routes = [[0,0]]
-    # prepare arrival arrays
     arrs: List[List[float]] = []
     for r in routes:
         ok, arr = recompute_arrivals(inst, r)
         arrs.append(arr if ok else [0.0]*len(r))
-
     unserved = set(removed)
     while unserved:
         best = None; best_reg = -1e18
@@ -713,89 +601,251 @@ def regret_repair(inst: Instance, routes: List[List[int]], removed: List[int]) -
                 if choices[0][0] > best_reg:
                     best = (u, choices[0]); best_reg = choices[0][0]
         if best is None:
-            # open a new route (single)
             u = unserved.pop()
             nr = [0, u, 0]
             ok, arr = recompute_arrivals(inst, nr)
-            if not ok:
-                arr = [0.0, max(inst.dist[0,u], inst.ready[u]), 0.0]
+            if not ok: arr = [0.0, max(inst.dist[0,u], inst.ready[u]), 0.0]
             routes.append(nr); arrs.append(arr)
         else:
-            u, (regret, delta, ridx, pos, new_arr) = best
+            u, (_, _, ridx, pos, new_arr) = best
             routes[ridx] = routes[ridx][:pos] + [u] + routes[ridx][pos:]
             arrs[ridx] = new_arr
             unserved.remove(u)
     return routes
 
-# Main HGS loop
+# ---- tâches parallèles ----
+def _seed_task(inst: Instance, nn: Optional[list[np.ndarray]], init: str, seed_val: int) -> List[List[int]]:
+    # donner un seed local pour diversifier
+    random.seed(seed_val); np.random.seed(seed_val)
+    routes = build_seed(inst) if init == 'regret' else build_seed_sweep(inst)
+    return rvnd(inst, routes, max_loops=3, nn=nn)
 
-def hgs_solve(inst: Instance, time_loops: int = 200, pop_size: int = 30,
-              time_limit: Optional[float] = None,
-              nn: Optional[list[np.ndarray]] = None,
-              init: str = 'regret') -> List[List[int]]:
-    t0 = time.perf_counter()
-    # Initial population: mix greedy seeds and random tours
+def _random_tour_task(inst: Instance, nn: Optional[list[np.ndarray]], has_tw: bool, seed_val: int) -> Tuple[List[List[int]], List[int]]:
+    random.seed(seed_val); np.random.seed(seed_val)
+    nodes = list(range(1, inst.n+1))
+    random.shuffle(nodes)
+    tour = nodes.copy()
+    routes = (split_vrptw(inst, tour) if has_tw else split_cvrp(inst, tour)) or [[0,u,0] for u in tour]
+    routes = rvnd(inst, routes, max_loops=2, nn=nn)
+    return routes, tour_from_routes(routes)
+
+def _offspring_task(inst: Instance,
+                    nn: Optional[list[np.ndarray]],
+                    has_tw: bool,
+                    p1: List[int], p2: List[int],
+                    best_routes: List[List[int]],
+                    seed_val: int) -> List[List[int]]:
+    random.seed(seed_val); np.random.seed(seed_val)
+    ctour = ox_crossover(p1, p2)
+    croutes = split_vrptw(inst, ctour) if has_tw else split_cvrp(inst, ctour)
+    if croutes is None:
+        q = max(2, inst.n//20)
+        removed = shaw_removal(inst, best_routes, q) if np.random.rand() < 0.7 else random_removal(inst, best_routes, q)
+        cand = remove_customers(best_routes, removed)
+        cand = regret_repair(inst, cand, removed)
+        ctour = tour_from_routes(cand)
+        croutes = (split_vrptw(inst, ctour) if has_tw else split_cvrp(inst, ctour)) or cand
+    croutes = rvnd(inst, croutes, max_loops=3, nn=nn)
+    # Diversification comme en série
+    if np.random.rand() < 0.30:
+        q = max(2, inst.n//25)
+        removed = shaw_removal(inst, croutes, q) if np.random.rand()<0.7 else random_removal(inst, croutes, q)
+        cand = remove_customers(croutes, removed)
+        cand = regret_repair(inst, cand, removed)
+        cand = rvnd(inst, cand, max_loops=2, nn=nn)
+        if total_cost(inst, cand) < total_cost(inst, croutes):
+            croutes = cand
+    return croutes
+
+def hgs_solve(inst: Instance, time_loops: int, pop_size: int,
+              init: str = 'auto', nn: Optional[list[np.ndarray]] = None,
+              workers: int = 1) -> List[List[int]]:
+    # init policy
+    if init == 'auto':
+        init = 'regret' if inst.has_tw else 'sweep'
+
+    def fit(rs): return total_cost(inst, rs)
+
+    # ---- génération initiale (parallèle) ----
     pop_tours: List[List[int]] = []
     pop_routes: List[List[List[int]]] = []
 
-    for _ in range(min(pop_size, 8)):
-        if inst.has_tw or init == 'regret':
-            routes = build_seed(inst)
-        else:
-            routes = build_seed_sweep(inst)
-        routes = rvnd(inst, routes, max_loops=3, nn=nn, time_limit=time_limit, t0=t0)
-        pop_routes.append(routes); pop_tours.append(tour_from_routes(routes))
+    if workers > 1 and HAVE_JOBLIB:
+        # seeds
+        seeds_to_build = min(pop_size, max(8, workers*2))
+        base_seed = random.randint(1, 10_000_000)
+        seed_vals = [base_seed + i for i in range(seeds_to_build)]
+        seed_routes = Parallel(n_jobs=workers, backend="loky")(
+            delayed(_seed_task)(inst, nn, init, sv) for sv in seed_vals
+        )
+        for rs in seed_routes:
+            pop_routes.append(rs); pop_tours.append(tour_from_routes(rs))
 
-    nodes = list(range(1, inst.n+1))
-    for _ in range(max(0, pop_size - len(pop_tours))):
-        random.shuffle(nodes)
-        tour = nodes.copy()
-        routes = (split_vrptw(inst, tour) if inst.has_tw else split_cvrp(inst, tour)) or [[0,u,0] for u in tour]
-        routes = rvnd(inst, routes, max_loops=2, nn=nn, time_limit=time_limit, t0=t0)
-        pop_routes.append(routes); pop_tours.append(tour_from_routes(routes))
+        # random tours pour compléter la pop
+        remain = max(0, pop_size - len(pop_tours))
+        if remain > 0:
+            seed_vals2 = [base_seed + 10_000 + i for i in range(remain)]
+            extras = Parallel(n_jobs=workers, backend="loky")(
+                delayed(_random_tour_task)(inst, nn, inst.has_tw, sv) for sv in seed_vals2
+            )
+            for rs, tour in extras:
+                pop_routes.append(rs); pop_tours.append(tour)
+    else:
+        # série (fallback)
+        for _ in range(min(pop_size, 8)):
+            routes = build_seed(inst) if init == 'regret' else build_seed_sweep(inst)
+            routes = rvnd(inst, routes, max_loops=3, nn=nn)
+            pop_routes.append(routes); pop_tours.append(tour_from_routes(routes))
+        nodes = list(range(1, inst.n+1))
+        for _ in range(max(0, pop_size - len(pop_tours))):
+            random.shuffle(nodes)
+            tour = nodes.copy()
+            routes = (split_vrptw(inst, tour) if inst.has_tw else split_cvrp(inst, tour)) or [[0,u,0] for u in tour]
+            routes = rvnd(inst, routes, max_loops=2, nn=nn)
+            pop_routes.append(routes); pop_tours.append(tour_from_routes(routes))
 
-    def fit(rs): return total_cost(inst, rs)
     best = min(pop_routes, key=fit); bestc = fit(best)
 
+    # ---- boucle HGS (offspring en batch parallèle) ----
+    # taille de batch:  = workers (ou 2*workers si pop est grande)
+    batch_size = max(1, workers if workers > 1 and HAVE_JOBLIB else 1)
+    print(f"[parallel] workers={workers}, batch={batch_size}")
+
     for _ in range(time_loops):
-        if time_limit and (time.perf_counter() - t0) > time_limit:
-            break
-        i, j = np.random.choice(len(pop_tours), 2, replace=False)
-        ctour = ox_crossover(pop_tours[i], pop_tours[j])
-        croutes = split_vrptw(inst, ctour) if inst.has_tw else split_cvrp(inst, ctour)
-        if croutes is None:
-            # ALNS recovery from current best
-            q = max(2, inst.n//20)
-            removed = shaw_removal(inst, best, q) if np.random.rand()<0.7 else random_removal(inst, best, q)
-            cand = remove_customers(best, removed)
-            cand = regret_repair(inst, cand, removed)
-            ctour = tour_from_routes(cand)
-            croutes = (split_vrptw(inst, ctour) if inst.has_tw else split_cvrp(inst, ctour)) or cand
-        croutes = rvnd(inst, croutes, max_loops=3, nn=nn, time_limit=time_limit, t0=t0)
-        cc = fit(croutes)
+        if batch_size == 1:
+            # mode série (compatible avec l'ancienne logique)
+            i, j = np.random.choice(len(pop_tours), 2, replace=False)
+            ctour = ox_crossover(pop_tours[i], pop_tours[j])
+            croutes = split_vrptw(inst, ctour) if inst.has_tw else split_cvrp(inst, ctour)
+            if croutes is None:
+                q = max(2, inst.n//20)
+                removed = shaw_removal(inst, best, q) if np.random.rand()<0.7 else random_removal(inst, best, q)
+                cand = remove_customers(best, removed)
+                cand = regret_repair(inst, cand, removed)
+                ctour = tour_from_routes(cand)
+                croutes = (split_vrptw(inst, ctour) if inst.has_tw else split_cvrp(inst, ctour)) or cand
+            croutes = rvnd(inst, croutes, max_loops=3, nn=nn)
+            cc = fit(croutes)
+            if np.random.rand() < 0.30:
+                q = max(2, inst.n//25)
+                removed = shaw_removal(inst, croutes, q) if np.random.rand()<0.7 else random_removal(inst, croutes, q)
+                cand = remove_customers(croutes, removed)
+                cand = regret_repair(inst, cand, removed)
+                cand = rvnd(inst, cand, max_loops=2, nn=nn)
+                c2 = fit(cand)
+                if c2 < cc: croutes, cc = cand, c2
+            pop_routes.append(croutes); pop_tours.append(tour_from_routes(croutes))
+            if len(pop_routes) > pop_size:
+                worst_idx = int(np.argmax([fit(r) for r in pop_routes]))
+                pop_routes.pop(worst_idx); pop_tours.pop(worst_idx)
+            if cc < bestc - 1e-9:
+                best = croutes; bestc = cc
+        else:
+            # préparer un batch de couples de parents
+            idx_pairs = []
+            for __ in range(batch_size):
+                i, j = np.random.choice(len(pop_tours), 2, replace=False)
+                idx_pairs.append((i,j))
+            base_seed = random.randint(1, 10_000_000)
+            seeds = [base_seed + k for k in range(batch_size)]
+            # lancer en // la création + amélioration des enfants
+            children = Parallel(n_jobs=workers, backend="loky")(
+                delayed(_offspring_task)(
+                    inst, nn, inst.has_tw,
+                    pop_tours[i], pop_tours[j],
+                    best, seeds[k]
+                )
+                for k, (i, j) in enumerate(idx_pairs)
+            )
+            # intégrer
+            for croutes in children:
+                cc = fit(croutes)
+                pop_routes.append(croutes); pop_tours.append(tour_from_routes(croutes))
+                if len(pop_routes) > pop_size:
+                    worst_idx = int(np.argmax([fit(r) for r in pop_routes]))
+                    pop_routes.pop(worst_idx); pop_tours.pop(worst_idx)
+                if cc < bestc - 1e-9:
+                    best = croutes; bestc = cc
 
-        # ALNS diversify occasionally
-        if np.random.rand() < 0.30:
-            q = max(2, inst.n//25)
-            removed = shaw_removal(inst, croutes, q) if np.random.rand()<0.7 else random_removal(inst, croutes, q)
-            cand = remove_customers(croutes, removed)
-            cand = regret_repair(inst, cand, removed)
-            cand = rvnd(inst, cand, max_loops=2, nn=nn, time_limit=time_limit, t0=t0)
-            c2 = fit(cand)
-            if c2 < cc: croutes, cc = cand, c2
-
-        pop_routes.append(croutes); pop_tours.append(tour_from_routes(croutes))
-        if len(pop_routes) > pop_size:
-            worst_idx = int(np.argmax([fit(r) for r in pop_routes]))
-            pop_routes.pop(worst_idx); pop_tours.pop(worst_idx)
-        if cc < bestc - 1e-9:
-            best = croutes; bestc = cc
     return best
 
+# ------------------------------ .sol reference (gap) ------------------------------
+def parse_sol_routes_and_cost(sol_path: Path) -> Tuple[Optional[float], List[List[int]]]:
+    cost = None
+    routes: List[List[int]] = []
+    if not sol_path.exists():
+        return None, []
+    txt = sol_path.read_text(encoding='utf-8', errors='ignore')
+    for ln in txt.splitlines():
+        m = re.search(r'(?i)\bcost\b\s*[: ]\s*([0-9]+(?:\.[0-9]+)?)', ln)
+        if m:
+            try:
+                cost = float(m.group(1))
+            except Exception:
+                pass
+        r = re.search(r'(?i)\broute\b\s*#?\s*\d+\s*:\s*(.*)$', ln.strip())
+        if r:
+            seq = [int(x) for x in re.findall(r'\d+', r.group(1))]
+            routes.append(seq)
+    return cost, routes
+
+def compute_routes_cost_with_instance(inst: Instance, plain_routes: List[List[int]]) -> float:
+    total = 0.0
+    for seq in plain_routes:
+        route = [0] + seq + [0]
+        total += route_cost(inst.dist, np.array(route, dtype=np.int32))
+    return total
+
+def find_sol_reference_cost(inst: Instance, inst_path: Path) -> Optional[float]:
+    stem = inst_path.stem
+    cand = inst_path.with_suffix('.sol')
+    cost, routes = parse_sol_routes_and_cost(cand)
+    if cost is not None:
+        return cost
+    if routes:
+        return compute_routes_cost_with_instance(inst, routes)
+    data_root = (Path.cwd() / 'data').resolve()
+    if data_root.exists():
+        for p in data_root.rglob(stem + '.sol'):
+            cost, routes = parse_sol_routes_and_cost(p)
+            if cost is not None:
+                return cost
+            if routes:
+                return compute_routes_cost_with_instance(inst, routes)
+    return None
+
+# ------------------------------ Auto-tuning ------------------------------
+def stable_seed_from_name(name: str) -> int:
+    h = hashlib.md5(name.encode('utf-8')).hexdigest()
+    return (int(h[:2], 16) % 3) + 1
+
+def auto_params(inst: Instance) -> dict:
+    n = inst.n
+    name = inst.name.lower()
+    is_x = name.startswith('x-n')
+    init = 'regret' if inst.has_tw else 'sweep'
+    fast = (n >= 120) or is_x
+    if n <= 80: nnk = 20
+    elif n <= 200: nnk = 25
+    elif n <= 400: nnk = 30
+    else: nnk = 35
+    if n <= 50:
+        loops, pop = 400, 48
+    elif n <= 120:
+        loops, pop = 600, 56
+    elif n <= 300:
+        loops, pop = 800, 64
+    elif n <= 600:
+        loops, pop = 900, 72
+    else:
+        loops, pop = 1200, 80
+    if is_x and n >= 90:
+        loops = max(loops, 800)
+        pop   = max(pop, 64)
+    seed = stable_seed_from_name(name)
+    return dict(loops=loops, pop=pop, seed=seed, fast=fast, nnk=nnk, init=init)
+
 # ------------------------------ Validation & IO ------------------------------
- 
-
-
 def validate_solution(inst: Instance, routes: List[List[int]]) -> None:
     seen: List[int] = []
     for r in routes: seen += r[1:-1]
@@ -804,7 +854,6 @@ def validate_solution(inst: Instance, routes: List[List[int]]) -> None:
         dups    = sorted({x for x in seen if seen.count(x) > 1})
         extra   = sorted(list(set(seen) - set(range(1, inst.n+1))))
         raise ValueError(f'Solution invalide: manquants={missing}, doublons={dups}, extras={extra}')
-    # capacity and TW
     for idx, r in enumerate(routes, 1):
         if not capacity_ok(inst, r):
             raise ValueError(f'Capacité dépassée sur la route #{idx}')
@@ -812,90 +861,156 @@ def validate_solution(inst: Instance, routes: List[List[int]]) -> None:
             ok, _ = recompute_arrivals(inst, r)
             if not ok: raise ValueError(f'Fenêtre de temps violée sur la route #{idx}')
 
+def solve_file(path: str,
+               loops: Optional[int] = None,
+               pop: Optional[int] = None,
+               seed: Optional[int] = None,
+               fast: Optional[bool] = None,
+               nnk: Optional[int] = None,
+               init: str = 'auto',
+               workers: Optional[int] = None) -> str:
 
-def solve_file(path: str, loops: int, pop: int, seed: Optional[int]) -> str:
-    # Exécute l’algo et imprime UNIQUEMENT le coût calculé
+    path_l = path.lower()
+    inst_path = Path(path)
+    inst = parse_solomon_txt(path) if path_l.endswith('.txt') else parse_cvrplib_vrp(path)
+
+    # Auto-tune si non fourni
+    ap = auto_params(inst)
+    loops = ap['loops'] if loops is None else loops
+    pop   = ap['pop']   if pop   is None else pop
+    seed  = ap['seed']  if seed  is None else seed
+    fast  = ap['fast']  if fast  is None else fast
+    nnk   = ap['nnk']   if nnk   is None else nnk
+    init  = ('regret' if inst.has_tw else 'sweep') if init == 'auto' else init
+    if workers is None:
+        try:
+            workers = max(1, os.cpu_count() or 1)
+        except Exception:
+            workers = 1
+
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
 
-    inst = parse_solomon_txt(path) if path.lower().endswith('.txt') else parse_cvrplib_vrp(path)
-    routes = hgs_solve(inst, time_loops=loops, pop_size=pop)
+    nn = build_nn(inst.dist, nnk) if fast else None
+
+    print(f"[auto] {inst.name}: I={loops}, P={pop}, S={seed}, fast={fast}, nnk={nnk}, init={init}")
+    if workers > 1 and not HAVE_JOBLIB:
+        print("[warn] joblib indisponible -> workers=1 (série)")
+        workers = 1
+
+    t0 = time.perf_counter()
+    routes = hgs_solve(inst, time_loops=loops, pop_size=pop, init=init, nn=nn, workers=workers)
+    elapsed = time.perf_counter() - t0
     validate_solution(inst, routes)
 
     lines = []
     for i, r in enumerate(routes, 1):
         lines.append(f"Route #{i}: " + " ".join(str(x) for x in r[1:-1]))
-
     cost = total_cost(inst, routes)
     lines.append(f"Cost {int(round(cost))}")
+    lines.append(f"Time {elapsed:.2f}s")
 
-    # Pas de gap, pas de best-known
+    ref = find_sol_reference_cost(inst, inst_path)
+    if ref and ref > 0:
+        gap = 100.0 * (cost - ref) / ref
+        lines.append(f"gap {gap:.2f}% (ref {int(round(ref))})")
+    else:
+        lines.append("gap N/A")
     return "\n".join(lines)
 
-# ------------------------------ Interactive Picker ------------------------------
-def find_candidate_files(root: Path, exts=(".vrp", ".txt"), max_depth=3) -> List[Path]:
+# ------------------------------ Menu interactif (split TW / non-TW) ------------------------------
+def find_candidate_files(root: Path, max_depth: int = 4) -> Tuple[List[Path], List[Path]]:
     root = root.resolve()
-    out: List[Path] = []
+    tw: List[Path] = []
+    vrp: List[Path] = []
     def rec(dirp: Path, d: int):
         if d > max_depth: return
         try:
             for e in dirp.iterdir():
-                if e.is_dir(): rec(e, d+1)
-                elif e.suffix.lower() in exts: out.append(e)
+                if e.is_dir():
+                    rec(e, d+1)
+                else:
+                    suf = e.suffix.lower()
+                    if suf == '.txt':
+                        tw.append(e.resolve())
+                    elif suf == '.vrp':
+                        vrp.append(e.resolve())
         except PermissionError:
             pass
     rec(root, 0)
-    out = sorted(set(out), key=lambda p: str(p).lower())
-    return out
+    tw = sorted(set(tw), key=lambda p: str(p).lower())
+    vrp = sorted(set(vrp), key=lambda p: str(p).lower())
+    return tw, vrp
 
-
-def interactive_choose() -> List[Path]:
+def interactive_choose_split() -> List[Path]:
     project_root = Path.cwd()
-    data_root = project_root / 'data'
+    data_root = (project_root / 'data')
     root = data_root if data_root.exists() else project_root
-    cands = find_candidate_files(root)
-    if not cands:
-        print(f"Aucun .vrp/.txt dans {root}. Donne un chemin :")
+
+    tw, vrp = find_candidate_files(root)
+    if not tw and not vrp:
+        print(f"Aucun .vrp/.txt trouvé sous {root}. Donne un chemin :")
         s = input("Fichier : ").strip()
         p = Path(s)
         return [p] if p.exists() else []
-    print(f"\nFichiers détectés sous {root}:")
-    for i, p in enumerate(cands, 1):
-        try:
-            rel = p.relative_to(project_root)
-        except Exception:
-            rel = p
-        print(f"  [{i}] {rel}")
-    s = input("\nChoisis (ex: 1,3) ou chemin, ou 'q' : ").strip()
-    if s.lower() in {"q","quit","exit"}: return []
-    if re.fullmatch(r"\d+(,\d+)*", s):
-        idxs = [int(x) for x in s.split(',')]
-        chosen = []
-        for k in idxs:
-            if 1 <= k <= len(cands): chosen.append(cands[k-1])
-        return chosen
-    p = Path(s)
-    return [p] if p.exists() else []
+
+    while True:
+        print("\n=== Sélection d'instances ===")
+        print(f"[1] Avec TW (.txt, Solomon)   - {len(tw)} fichiers")
+        print(f"[2] Sans TW (.vrp, CVRPLIB)   - {len(vrp)} fichiers")
+        print("[Q] Quitter")
+        choice = input("Choix catégorie [1/2/Q]: ").strip().lower()
+        if choice in ('q', 'quit', 'exit'):
+            return []
+        if choice not in ('1','2'):
+            continue
+
+        pool = tw if choice == '1' else vrp
+        if not pool:
+            print("Aucun fichier dans cette catégorie.")
+            continue
+        print("\nFichiers détectés:")
+        for i, p in enumerate(pool, 1):
+            try:
+                rel = p.relative_to(project_root)
+            except Exception:
+                rel = p
+            print(f"  [{i}] {rel}")
+        s = input("\nChoisis (ex: 1,3) ou chemin, ou 'b' pour revenir, ou 'q' : ").strip()
+        if s.lower() in {'b', 'back'}:
+            continue
+        if s.lower() in {'q','quit','exit'}:
+            return []
+        if re.fullmatch(r"\d+(,\d+)*", s):
+            idxs = [int(x) for x in s.split(',')]
+            chosen: List[Path] = []
+            for k in idxs:
+                if 1 <= k <= len(pool): chosen.append(pool[k-1])
+            return chosen
+        p = Path(s)
+        if p.exists():
+            return [p]
+        print("Entrée invalide, recommence.")
 
 # ------------------------------ CLI ------------------------------
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='VRP/VRPTW HGS solver')
-    parser.add_argument('files', nargs='*', help='paths to .vrp/.txt')
-    parser.add_argument('-I','--iterations', type=int, default=200, help='HGS time loops')
-    parser.add_argument('-P','--popsize', type=int, default=30, help='Population size')
-    parser.add_argument('-S','--seed', type=int, default=None, help='Random seed')
-    parser.add_argument('--best-known', type=str, default=None, help="Chemin vers un fichier JSON/CSV contenant {name: best_cost}")
-    parser.add_argument('-T','--time-limit', type=float, default=None, help='Temps max en secondes (arrêt propre)')
-    parser.add_argument('--fast', action='store_true', help='Active granular neighborhoods + first-improvement')
-    parser.add_argument('--nnk', type=int, default=25, help='Taille de la liste de plus-proches voisins (fast)')
-    parser.add_argument('--init', choices=['regret','sweep'], default='regret', help="Heuristique d'initialisation (CVRP: 'sweep' conseillé; VRPTW: 'regret')")
+def main():
+    parser = argparse.ArgumentParser(description='VRP/VRPTW HGS solver (menu + gap via .sol + auto-tuning + parallel)')
+    parser.add_argument('files', nargs='*', help='paths to .vrp/.txt (sinon menu interactif)')
+    parser.add_argument('-I','--iterations', type=int, default=None, help='HGS time loops (override auto)')
+    parser.add_argument('-P','--popsize', type=int, default=None, help='Population size (override auto)')
+    parser.add_argument('-S','--seed', type=int, default=None, help='Random seed (override auto)')
+    parser.add_argument('--nnk', type=int, default=None, help='k plus-proches voisins (override auto)')
+    parser.add_argument('--init', choices=['auto','regret','sweep'], default='auto', help='Heuristique init (override)')
+    parser.add_argument('--fast', dest='fast', action='store_const', const=True, default=None, help='Force fast ON')
+    parser.add_argument('--no-fast', dest='fast', action='store_const', const=False, help='Force fast OFF')
+    parser.add_argument('-W','--workers', type=int, default=None, help="Nb de processus en parallèle (par défaut = nb de cœurs)")
     args = parser.parse_args()
 
-    paths: List[Path]
-    if not args.files:
-        paths = interactive_choose()
-    else:
+    if args.files:
         paths = [Path(p) for p in args.files]
+    else:
+        paths = interactive_choose_split()
+
     if not paths:
         sys.exit(0)
 
@@ -905,9 +1020,16 @@ if __name__ == '__main__':
             print(solve_file(str(p),
                              loops=args.iterations,
                              pop=args.popsize,
-                             seed=args.seed))
+                             seed=args.seed,
+                             fast=args.fast,
+                             nnk=args.nnk,
+                             init=args.init,
+                             workers=args.workers))
         except Exception as e:
             import traceback
             print("Error:", e)
             traceback.print_exc()
         print()
+
+if __name__ == '__main__':
+    main()
