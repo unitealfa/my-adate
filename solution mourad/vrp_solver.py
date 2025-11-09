@@ -6,25 +6,42 @@ VRP / VRPTW solver (HGS + Split(TW) + RVND + ALNS, Numba-accelerated when availa
 - Ne JAMAIS utiliser .sol pour construire : .sol uniquement pour le gap
 - Distances: CVRP -> EUC_2D arrondies ; Solomon -> Euclidiennes
 - Menu interactif : choix séparé des fichiers Avec TW (.txt) et Sans TW (.vrp)
-- Auto-tuning des paramètres (-I, -P, -S, --fast, --nnk, --init) par instance
-- Accélération : parallélisation CPU (joblib) pour seeds et offspring (HGS)
-
-Lancer simplement:
-    python vrp_hgs_menu_gap.py
-
-Exemples overrides (facultatifs):
-    python vrp_hgs_menu_gap.py data/A-n32-k5.vrp -I 400 -P 48 -S 1
-    python vrp_hgs_menu_gap.py --fast --nnk 20 --init regret -S 2
+- Auto-tuning des paramètres (-I, -P, -S, --fast, --nnk, --init, -W, -T) par instance
+- Accélération : parallélisation CPU (joblib) + memmap + réduction sur-souscription BLAS
 """
 
-import math, re, sys, argparse, random, time, hashlib, os
+# ------------------------------------------------------------
+# (1) LOCK threads BLAS AVANT d'importer NumPy !
+# ------------------------------------------------------------
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("BLIS_NUM_THREADS", "1")
+
+# ------------------------------------------------------------
+# Imports standard
+# ------------------------------------------------------------
+import math, re, sys, argparse, random, time, hashlib
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 
+# ------------------------------------------------------------
+# NumPy (après lock BLAS) + threadpoolctl (optionnel)
+# ------------------------------------------------------------
 import numpy as np
+try:
+    from threadpoolctl import threadpool_limits
+    threadpool_limits(limits=1)  # force MKL/BLAS à 1 thread par process
+except Exception:
+    pass
 
-# --- joblib (parallèle) ---
+# ------------------------------------------------------------
+# joblib (parallèle) avec memmap
+# ------------------------------------------------------------
 try:
     from joblib import Parallel, delayed
     HAVE_JOBLIB = True
@@ -35,6 +52,9 @@ except Exception:
     def delayed(f):
         return f
 
+# ------------------------------------------------------------
+# numba (optionnel)
+# ------------------------------------------------------------
 try:
     from numba import njit
     NUMBA = True
@@ -62,13 +82,20 @@ class Instance:
 
 # ------------------------------ NN (granular) ------------------------------
 def build_nn(dist: np.ndarray, k: int) -> list[np.ndarray]:
+    """
+    Version rapide : utilise argpartition (O(n*k)) au lieu d'argsort complet (O(n log n)).
+    On coupe à k+3 puis on trie localement ces candidats.
+    """
     n = dist.shape[0]
-    order = np.argsort(dist, axis=1)
-    nn: list[np.ndarray] = []
+    kth = min(k + 3, max(1, n - 1))
+    part = np.argpartition(dist, kth=kth, axis=1)[:, :kth]
+    nn_list: list[np.ndarray] = []
     for u in range(n):
-        cand = [int(v) for v in order[u] if v != u and v != 0][:k]
-        nn.append(np.array(cand, dtype=np.int32))
-    return nn
+        cand = part[u]
+        cand = [int(v) for v in cand if v != u and v != 0]
+        cand = sorted(cand, key=lambda v: dist[u, v])[:k]
+        nn_list.append(np.asarray(cand, dtype=np.int32))
+    return nn_list
 
 # ------------------------------ Parsing ------------------------------
 def parse_solomon_txt(path: str) -> Instance:
@@ -615,7 +642,6 @@ def regret_repair(inst: Instance, routes: List[List[int]], removed: List[int]) -
 
 # ---- tâches parallèles ----
 def _seed_task(inst: Instance, nn: Optional[list[np.ndarray]], init: str, seed_val: int) -> List[List[int]]:
-    # donner un seed local pour diversifier
     random.seed(seed_val); np.random.seed(seed_val)
     routes = build_seed(inst) if init == 'regret' else build_seed_sweep(inst)
     return rvnd(inst, routes, max_loops=3, nn=nn)
@@ -646,7 +672,6 @@ def _offspring_task(inst: Instance,
         ctour = tour_from_routes(cand)
         croutes = (split_vrptw(inst, ctour) if has_tw else split_cvrp(inst, ctour)) or cand
     croutes = rvnd(inst, croutes, max_loops=3, nn=nn)
-    # Diversification comme en série
     if np.random.rand() < 0.30:
         q = max(2, inst.n//25)
         removed = shaw_removal(inst, croutes, q) if np.random.rand()<0.7 else random_removal(inst, croutes, q)
@@ -659,39 +684,41 @@ def _offspring_task(inst: Instance,
 
 def hgs_solve(inst: Instance, time_loops: int, pop_size: int,
               init: str = 'auto', nn: Optional[list[np.ndarray]] = None,
-              workers: int = 1) -> List[List[int]]:
-    # init policy
+              workers: int = 1, time_limit: Optional[float] = None,
+              _joblib_opts: Optional[dict] = None) -> List[List[int]]:
     if init == 'auto':
         init = 'regret' if inst.has_tw else 'sweep'
 
     def fit(rs): return total_cost(inst, rs)
+
+    # Joblib opts (memmap etc.)
+    jl = dict(backend="loky", prefer="processes")
+    if _joblib_opts:
+        jl.update(_joblib_opts)
 
     # ---- génération initiale (parallèle) ----
     pop_tours: List[List[int]] = []
     pop_routes: List[List[List[int]]] = []
 
     if workers > 1 and HAVE_JOBLIB:
-        # seeds
         seeds_to_build = min(pop_size, max(8, workers*2))
         base_seed = random.randint(1, 10_000_000)
         seed_vals = [base_seed + i for i in range(seeds_to_build)]
-        seed_routes = Parallel(n_jobs=workers, backend="loky")(
+        seed_routes = Parallel(n_jobs=workers, **jl)(
             delayed(_seed_task)(inst, nn, init, sv) for sv in seed_vals
         )
         for rs in seed_routes:
             pop_routes.append(rs); pop_tours.append(tour_from_routes(rs))
 
-        # random tours pour compléter la pop
         remain = max(0, pop_size - len(pop_tours))
         if remain > 0:
             seed_vals2 = [base_seed + 10_000 + i for i in range(remain)]
-            extras = Parallel(n_jobs=workers, backend="loky")(
+            extras = Parallel(n_jobs=workers, **jl)(
                 delayed(_random_tour_task)(inst, nn, inst.has_tw, sv) for sv in seed_vals2
             )
             for rs, tour in extras:
                 pop_routes.append(rs); pop_tours.append(tour)
     else:
-        # série (fallback)
         for _ in range(min(pop_size, 8)):
             routes = build_seed(inst) if init == 'regret' else build_seed_sweep(inst)
             routes = rvnd(inst, routes, max_loops=3, nn=nn)
@@ -707,13 +734,18 @@ def hgs_solve(inst: Instance, time_loops: int, pop_size: int,
     best = min(pop_routes, key=fit); bestc = fit(best)
 
     # ---- boucle HGS (offspring en batch parallèle) ----
-    # taille de batch:  = workers (ou 2*workers si pop est grande)
-    batch_size = max(1, workers if workers > 1 and HAVE_JOBLIB else 1)
+    batch_size = 1
+    if workers > 1 and HAVE_JOBLIB:
+        batch_size = max(workers * 2, 8)  # batch plus large pour amortir l'overhead
     print(f"[parallel] workers={workers}, batch={batch_size}")
 
+    t_start = time.perf_counter()
+
     for _ in range(time_loops):
+        if time_limit is not None and (time.perf_counter() - t_start) >= time_limit:
+            break
+
         if batch_size == 1:
-            # mode série (compatible avec l'ancienne logique)
             i, j = np.random.choice(len(pop_tours), 2, replace=False)
             ctour = ox_crossover(pop_tours[i], pop_tours[j])
             croutes = split_vrptw(inst, ctour) if inst.has_tw else split_cvrp(inst, ctour)
@@ -741,15 +773,13 @@ def hgs_solve(inst: Instance, time_loops: int, pop_size: int,
             if cc < bestc - 1e-9:
                 best = croutes; bestc = cc
         else:
-            # préparer un batch de couples de parents
             idx_pairs = []
             for __ in range(batch_size):
                 i, j = np.random.choice(len(pop_tours), 2, replace=False)
                 idx_pairs.append((i,j))
             base_seed = random.randint(1, 10_000_000)
             seeds = [base_seed + k for k in range(batch_size)]
-            # lancer en // la création + amélioration des enfants
-            children = Parallel(n_jobs=workers, backend="loky")(
+            children = Parallel(n_jobs=workers, **jl)(
                 delayed(_offspring_task)(
                     inst, nn, inst.has_tw,
                     pop_tours[i], pop_tours[j],
@@ -757,7 +787,6 @@ def hgs_solve(inst: Instance, time_loops: int, pop_size: int,
                 )
                 for k, (i, j) in enumerate(idx_pairs)
             )
-            # intégrer
             for croutes in children:
                 cc = fit(croutes)
                 pop_routes.append(croutes); pop_tours.append(tour_from_routes(croutes))
@@ -819,31 +848,112 @@ def stable_seed_from_name(name: str) -> int:
     h = hashlib.md5(name.encode('utf-8')).hexdigest()
     return (int(h[:2], 16) % 3) + 1
 
+def _classify_instance(inst: Instance) -> Tuple[str, Optional[int], Optional[str]]:
+    """
+    Retourne (family, number, group) où :
+    - family ∈ {'solomon','x','ortec','cvrplib','other'}
+    - number : pour Solomon, le numéro (101..)
+    - group : pour Solomon, 'C'/'R'/'RC' ; sinon None
+    """
+    stem = Path(inst.name).stem.lower()
+    # Solomon: C101 / R201 / RC208 ...
+    m = re.match(r'^(c|r|rc)\s*[-_]?(\d+)$', stem)
+    if m:
+        grp = m.group(1).upper()
+        num = int(m.group(2))
+        return ('solomon', num, grp)
+    # X-n*** (CVRPLIB grandes)
+    if stem.startswith('x-n'):
+        return ('x', None, None)
+    # ORTEC (VRPTW ASYM)
+    if 'ortec' in stem:
+        return ('ortec', None, None)
+    # Autres CVRPLIB
+    if stem.endswith('.vrp') or any(k in stem for k in ('-n', '_n')):
+        return ('cvrplib', None, None)
+    return ('other', None, None)
+
 def auto_params(inst: Instance) -> dict:
     n = inst.n
     name = inst.name.lower()
-    is_x = name.startswith('x-n')
+    fam, num, grp = _classify_instance(inst)
+
+    # Base: init / fast / nnk selon taille
     init = 'regret' if inst.has_tw else 'sweep'
+    is_x = (fam == 'x')
     fast = (n >= 120) or is_x
+
+    # nnk par défaut selon n
     if n <= 80: nnk = 20
     elif n <= 200: nnk = 25
     elif n <= 400: nnk = 30
     else: nnk = 35
-    if n <= 50:
-        loops, pop = 400, 48
-    elif n <= 120:
-        loops, pop = 600, 56
-    elif n <= 300:
-        loops, pop = 800, 64
-    elif n <= 600:
-        loops, pop = 900, 72
+
+    # Boucles & pop selon n
+    if n <= 50:         loops, pop = 400, 48
+    elif n <= 120:      loops, pop = 600, 56
+    elif n <= 300:      loops, pop = 800, 64
+    elif n <= 600:      loops, pop = 900, 72
+    else:               loops, pop = 1200, 80
+
+    # Ajustements par famille / difficulté
+    time_limit = None
+    cpu = max(1, os.cpu_count() or 1)
+    workers = min(cpu, 8)  # plafond raisonnable par défaut
+
+    if fam == 'solomon':
+        # Sets '1xx' (fenêtres serrées) vs '2xx' (plus larges)
+        is_set1 = (num is not None and num < 200)
+        # nnk un peu plus grand pour TW, init regret
+        init = 'regret'
+        if n <= 120:
+            nnk = max(nnk, 25)
+        # temps
+        if is_set1:
+            time_limit = 30 if n <= 100 else 45
+        else:
+            time_limit = 60 if n <= 150 else 75
+        # workers : RC/R un peu plus gourmands -> 8 si dispo
+        if grp in ('R','RC'):
+            workers = min(cpu, 8)
+        else:
+            workers = min(cpu, 6 if n <= 80 else 8)
+
+    elif fam == 'x':
+        # Grandes instances CVRPLIB X-n***
+        fast = True
+        nnk = max(nnk, 30)
+        if n <= 200:      time_limit = 60
+        elif n <= 400:    time_limit = 90
+        elif n <= 700:    time_limit = 120
+        else:             time_limit = 180
+        # Trop de workers peut surcharger la mémoire/IPC
+        workers = min(cpu, 6 if n >= 300 else 8)
+
+    elif fam == 'ortec':
+        # ORTEC VRPTW (asym, TW denses)
+        fast = True
+        nnk = max(nnk, 30)
+        time_limit = 120 if n <= 300 else 180
+        workers = min(cpu, 8)
+
     else:
-        loops, pop = 1200, 80
-    if is_x and n >= 90:
-        loops = max(loops, 800)
-        pop   = max(pop, 64)
+        # Autres CVRPLIB / divers
+        if not inst.has_tw:
+            init = 'sweep'
+        time_limit = 45 if n <= 120 else (75 if n <= 300 else 120)
+        workers = min(cpu, 8 if n >= 80 else 4)
+
+    # Finitions: quelques boosts
+    if is_x and n >= 500:
+        loops = max(loops, 900)
+        pop   = max(pop, 72)
+
     seed = stable_seed_from_name(name)
-    return dict(loops=loops, pop=pop, seed=seed, fast=fast, nnk=nnk, init=init)
+    return dict(
+        loops=loops, pop=pop, seed=seed, fast=fast, nnk=nnk, init=init,
+        workers=workers, time_limit=time_limit
+    )
 
 # ------------------------------ Validation & IO ------------------------------
 def validate_solution(inst: Instance, routes: List[List[int]]) -> None:
@@ -868,13 +978,13 @@ def solve_file(path: str,
                fast: Optional[bool] = None,
                nnk: Optional[int] = None,
                init: str = 'auto',
-               workers: Optional[int] = None) -> str:
+               workers: Optional[int] = None,
+               time_limit: Optional[float] = None) -> str:
 
     path_l = path.lower()
     inst_path = Path(path)
     inst = parse_solomon_txt(path) if path_l.endswith('.txt') else parse_cvrplib_vrp(path)
 
-    # Auto-tune si non fourni
     ap = auto_params(inst)
     loops = ap['loops'] if loops is None else loops
     pop   = ap['pop']   if pop   is None else pop
@@ -882,25 +992,44 @@ def solve_file(path: str,
     fast  = ap['fast']  if fast  is None else fast
     nnk   = ap['nnk']   if nnk   is None else nnk
     init  = ('regret' if inst.has_tw else 'sweep') if init == 'auto' else init
+    workers = ap['workers'] if workers is None else workers
+    time_limit = ap['time_limit'] if time_limit is None else time_limit
+
+    if seed is not None:
+        random.seed(seed); np.random.seed(seed)
+
     if workers is None:
         try:
             workers = max(1, os.cpu_count() or 1)
         except Exception:
             workers = 1
 
-    if seed is not None:
-        random.seed(seed); np.random.seed(seed)
-
     nn = build_nn(inst.dist, nnk) if fast else None
 
-    print(f"[auto] {inst.name}: I={loops}, P={pop}, S={seed}, fast={fast}, nnk={nnk}, init={init}")
+    print(f"[auto] {inst.name}: I={loops}, P={pop}, S={seed}, fast={fast}, nnk={nnk}, init={init}, W={workers}, T={time_limit}")
+
     if workers > 1 and not HAVE_JOBLIB:
         print("[warn] joblib indisponible -> workers=1 (série)")
         workers = 1
 
+    # dossier memmap joblib (SSD recommandé)
+    joblib_tmp = (Path.cwd() / ".joblib_memmap")
+    joblib_tmp.mkdir(exist_ok=True)
+
     t0 = time.perf_counter()
-    routes = hgs_solve(inst, time_loops=loops, pop_size=pop, init=init, nn=nn, workers=workers)
+    routes = hgs_solve(
+        inst, time_loops=loops, pop_size=pop, init=init, nn=nn,
+        workers=workers, time_limit=time_limit,
+        _joblib_opts=dict(
+            backend="loky",
+            prefer="processes",
+            temp_folder=str(joblib_tmp),
+            max_nbytes="10M",      # memmap auto pour gros arrays
+            batch_size="auto",
+        ),
+    )
     elapsed = time.perf_counter() - t0
+
     validate_solution(inst, routes)
 
     lines = []
@@ -1003,7 +1132,8 @@ def main():
     parser.add_argument('--init', choices=['auto','regret','sweep'], default='auto', help='Heuristique init (override)')
     parser.add_argument('--fast', dest='fast', action='store_const', const=True, default=None, help='Force fast ON')
     parser.add_argument('--no-fast', dest='fast', action='store_const', const=False, help='Force fast OFF')
-    parser.add_argument('-W','--workers', type=int, default=None, help="Nb de processus en parallèle (par défaut = nb de cœurs)")
+    parser.add_argument('-W','--workers', type=int, default=None, help="Nb de processus en parallèle (auto si non fourni)")
+    parser.add_argument('-T','--time-limit', type=float, default=None, help='Limite temps en secondes pour la boucle HGS (auto si non fourni)')
     args = parser.parse_args()
 
     if args.files:
@@ -1024,7 +1154,8 @@ def main():
                              fast=args.fast,
                              nnk=args.nnk,
                              init=args.init,
-                             workers=args.workers))
+                             workers=args.workers,
+                             time_limit=args.time_limit))
         except Exception as e:
             import traceback
             print("Error:", e)
