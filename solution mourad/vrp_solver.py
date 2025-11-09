@@ -24,7 +24,8 @@ os.environ.setdefault("BLIS_NUM_THREADS", "1")
 # ------------------------------------------------------------
 # Imports standard
 # ------------------------------------------------------------
-import math, re, sys, argparse, random, time, hashlib
+import math, re, sys, argparse, random, time, hashlib, threading
+from itertools import cycle
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
@@ -243,6 +244,38 @@ def route_cost(dist: np.ndarray, route: np.ndarray) -> float:
 
 def total_cost(inst: Instance, routes: List[List[int]]) -> float:
     return sum(route_cost(inst.dist, np.array(r, dtype=np.int32)) for r in routes)
+
+class ConsoleLoader:
+    def __init__(self, message: str = "Calcul en cours", delay: float = 0.25) -> None:
+        self._message = message
+        self._delay = delay
+        self._symbols = cycle("|/-\\")
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._enabled = sys.stdout.isatty()
+
+    def _spin(self) -> None:
+        while not self._stop.is_set():
+            symbol = next(self._symbols)
+            sys.stdout.write(f"\r{self._message} {symbol}")
+            sys.stdout.flush()
+            if self._stop.wait(self._delay):
+                break
+        sys.stdout.write("\r" + " " * (len(self._message) + 2) + "\r")
+        sys.stdout.flush()
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._enabled:
+            return
+        self._stop.set()
+        self._thread.join()
 
 def capacity_ok(inst: Instance, route: List[int]) -> bool:
     load = 0.0
@@ -1016,18 +1049,23 @@ def solve_file(path: str,
     joblib_tmp = (Path.cwd() / ".joblib_memmap")
     joblib_tmp.mkdir(exist_ok=True)
 
+    loader = ConsoleLoader()
     t0 = time.perf_counter()
-    routes = hgs_solve(
-        inst, time_loops=loops, pop_size=pop, init=init, nn=nn,
-        workers=workers, time_limit=time_limit,
-        _joblib_opts=dict(
-            backend="loky",
-            prefer="processes",
+    loader.start()
+    try:
+        routes = hgs_solve(
+            inst, time_loops=loops, pop_size=pop, init=init, nn=nn,
+            workers=workers, time_limit=time_limit,
+            _joblib_opts=dict(
+                backend="loky",
+                prefer="processes",
             temp_folder=str(joblib_tmp),
             max_nbytes="10M",      # memmap auto pour gros arrays
             batch_size="auto",
         ),
     )
+    finally:
+        loader.stop()
     elapsed = time.perf_counter() - t0
 
     validate_solution(inst, routes)
