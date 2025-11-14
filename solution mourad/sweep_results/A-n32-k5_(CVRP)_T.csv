@@ -1,0 +1,4 @@
+instance,param,value,cost_mean,cost_std,cost_min,gap_mean_pct,gap_best_pct,time_mean_s,wall_mean_s,routes_mean,runs
+A-n32-k5 (CVRP),T,15,784.0,0.0,784.0,0.0,0.0,16.967,16.97008884999668,5.0,10
+A-n32-k5 (CVRP),T,30,784.0,0.0,784.0,0.0,0.0,31.645,31.647046960005536,5.0,10
+A-n32-k5 (CVRP),T,60,784.0,0.0,784.0,0.0,0.0,32.671,32.67451858001296,5.0,10
